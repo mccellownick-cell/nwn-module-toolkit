@@ -638,7 +638,27 @@ highlighted, because players will see the keeper's look wherever it replaces the
 The Module › Area › Object › Inventory tree. **Find object** searches every placed object by name, tag or template.
 
 ### 5.7 Areas and Conversations
-Area contents, event scripts and transitions (including scripted `JumpTo…` transitions). Conversations are shown as
+Area contents, event scripts and transitions (including scripted `JumpTo…` transitions). Each area also shows its
+**Settings** (interior or exterior, natural or urban, PvP if not the server default, no rest, always day or night) and its
+own **Variables** (the ones set in the toolset's Area Properties → Advanced → Variables). The search finds an area by a
+variable's name or value, a script or any setting (a tileset, say). Click an area for every property, grouped: general
+(size, tileset, type, comments, load screen), gameplay (PvP, no rest, spot and listen modifiers), day and night
+(lighting, sun and moon colours, shadows, sky box), fog, weather, sound (day/night/battle music, ambient sounds - as
+row numbers of the game's 2da tables) and scripts. `reports/areas.csv` has one row per area with every property as a
+column; `reports/area_variables.csv` one row per area variable.
+
+**The side panel for any game object.** Clicking an area, a blueprint (creature, item, placeable, door, store,
+trigger, encounter, waypoint, sound), a placed object or the module opens a panel that starts with:
+- **Scripts** - every event slot that names a script, by the name the toolset shows (a creature's `ScriptOnNotice` is
+  *OnPerception*), with *not found* on a script no module, hak or base-game copy was found for;
+- **Variables** - the object's own variables with type and value (a placed copy shows its own, not the blueprint's);
+  click one for every script that reads or sets it;
+- **Item scripts** (items only) - the tag-based script the game runs for the item (with the item events it handles:
+  activated, equipped, acquired...), the module item events that run it, and every script or conversation that names
+  the item's tag, with the line;
+- **Properties** - every other setting, lists (inventory, item properties, feats...) shown as counts.
+
+Changing page closes the side panel (if an editor in it holds unsaved text, you are asked first). Conversations are shown as
 readable dialogue trees with their conditions and actions, plus nodes that cannot be reached from the start.
 The Conversations list shows **where** each one is spoken (the areas where the NPC or placeable using it stands, placed
 copies of its blueprint included) and a chip on conversations that drive quests. Group it by set to see a family of
@@ -654,6 +674,61 @@ start. Group by **how it starts** to separate conversations spoken by placed NPC
 (blueprint), started by a script, or not used at all. The note at the top lists every place that starts a conversation
 from a name held in a variable - those can't be linked to one conversation, so check them before removing a
 conversation that looks unused. Also in `reports/conversations.csv`.
+
+### 5.7.1 Map
+A picture of the module's world, drawn from each area's own minimap images the way the game draws them (the tileset's
+image for every tile, turned as the tile is turned). Areas that join **edge to edge** - a transition near one area's
+east edge that arrives near the next area's west edge - are drawn side by side as one **joined map**; caves, dungeons
+and interiors are kept apart from the outdoors and get joined maps of their own. Areas reached only through doors or
+portals in the middle of an area stand alone (pick them from the list), except that an area reached by a crossing in its
+middle that arrives at an edge of the other area is drawn beyond that edge.
+
+The first time you open **Map** for a module it reads every area's tiles and every minimap image it needs (about half
+a minute for a big module). A pop-up shows what it is drawing, how far it has got and about how long is left; **Stop**
+ends it without saving anything (press **Draw the map** to start again). The result is kept in the analysis folder
+(`maps/`) and opens at once after that, until you analyse again. Nothing is changed: the module, haks and game are only
+read.
+
+- **Pick a map** from the list (joined maps first, largest first, then single areas by kind), or type an area's name in
+  *Find an area*. **−** / **+** zoom. Labels are cut to fit their area; hover an area for its full name.
+- **Grey squares** are tiles whose minimap image exists nowhere (not in the haks, the module or the game): the game
+  shows them blank on the minimap too, and each such area is an *error* on the Issues page (see below). **Black** is
+  what the game draws black - solid rock, dense forest, pits.
+- **Red dashed outline**: the area's transitions put it on top of another area. Builders often join areas in ways that
+  don't fit a flat grid (a loop that doesn't close, a road that leaves north and arrives east); the area is drawn anyway
+  so the world is shown whole, and the Checks tab lists each overlap as a note.
+- Small marks on the map are transitions: **green** joins two areas edge to edge, **pink** is a door or portal to
+  somewhere else.
+- **Click an area** for its card: its minimap, its problems with how to fix each, every **way out** (which door or
+  trigger, which edge, to which area and waypoint) and every **way in**. Click an area name there to go to it; *All area
+  details* opens the side panel (settings, variables, scripts).
+- **Export map as PNG** / **Export area as PNG** save a picture at 16 pixels per tile (twice the page's size), drawn
+  when you press it.
+
+An area set to **Underground** in its properties but outdoors in every other respect (an exterior tileset, weather, a
+day/night cycle, a sky box, edge links to above-ground areas) is drawn with the outdoors - and reported (below).
+
+**Checks tab.** Every finding, grouped by check (errors first), with the object, the area and how to fix it. Click a
+row to see the area on the map. The same findings are on the **Issues** page, where you can accept one as by design;
+only *areas overlap on the map* is Map-only.
+
+| Check (Issues category) | Severity | What it means |
+|---|---|---|
+| destination missing (`transition_dest_missing`) | error | No door or waypoint has the tag the transition points at: clicking it does nothing. A note instead when the object has an OnClick script, which may move the player itself |
+| destination differs in capitals (`transition_dest_case`) | error | Only a tag with other capitals exists - tags are case-sensitive |
+| destination area not in module (`transition_dest_area_missing`) / outside its area (`transition_dest_outside`) | error | The destination is in an area the module doesn't list, or outside the area's edges |
+| link switched off (`transition_no_link_flag`) | warning | A destination is typed in, but *Link to* is None (LinkedToFlags 0), so the transition is off |
+| door / waypoint mix-up (`transition_dest_type`) | warning | *Link to* says door but the tag is a waypoint, or the reverse |
+| several destinations share the tag (`transition_dest_ambiguous`) | warning | The game picks one of them |
+| arrives inside another transition (`transition_lands_in_transition`) | warning | The arrival point is inside a trigger that sends the player on somewhere else. Arriving inside the trigger that leads straight back is common and harmless, and not reported |
+| trigger is not a transition (`transition_not_a_transition`) | warning | A trigger with a destination whose type isn't Area Transition |
+| minimap image missing (`minimap_missing`) | error | Tiles whose tileset names a minimap image no hak, the module or the game has: blank on the in-game minimap. Names the tileset, the hak its `.set` comes from, each image and how many tiles use it. A note when the game folder wasn't set (the image may be in the game) |
+| tileset missing (`area_tileset_missing`) | error | No hak, the module or the game has the area's tileset: the area can't load |
+| set to Underground but outdoors (`area_underground_outdoor`) | warning | The area's Environment is Underground but the evidence says surface; names the evidence, the area's variables and every script line that asks `GetIsAreaAboveGround` (what the setting changes - sky boxes, map reveals, mounts...). The reverse (`area_above_ground_cave`, a cave set to Above ground) is a note |
+| one-way (`transition_one_way`), way back lands far away (`transition_return_far`), edges don't match (`transition_edge_mismatch`) | note | Worth a look, often intended |
+
+Minimap images are looked up the way players get them: haks in the module's order, the module, then the game.
+Your own override folder is left out on purpose - players don't have it.
 
 ### 5.8 Quest health
 Two tabs.
@@ -1307,6 +1382,10 @@ toolkit folder/
   strong evidence, not proof: read the stages before changing anything.
 - Item status in quests needs the module's haks (and the game folder) loaded in the analysis; without them, items from
   haks and the base game show as missing.
+- The **Map** places areas by where their transitions sit; an area reached only through doors in the middle of areas
+  stands alone, and links that don't fit a flat grid are drawn overlapping (red dashed). Tile heights (raised tiles)
+  are not shown. Minimap images in TGA and DDS (DXT1/DXT5, standard or BioWare's layout) are read; other texture
+  formats draw grey.
 - The identifier-load pitfall check is an approximate count.
 - Performance thresholds (60 creatures, 10 custom heartbeats, 50 container items, 300 store items) are rules of thumb,
   not engine limits.

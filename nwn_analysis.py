@@ -126,6 +126,7 @@ from collections import Counter, defaultdict, deque
 
 import nwn_describe
 import nwn_index
+import nwnlib as n
 import nwn_progress
 from nwn_index import BASE_GAME_PREFIXES, CARRIER_KINDS, REFERENCE_KINDS
 
@@ -538,6 +539,270 @@ GENERAL_REVIEW = ("the module uses NWNX", "hak(s) not loaded", "a script creates
                   "the module has no ", "same name as a base-game resource", "NWN install not configured",
                   "module not read completely")
 UNUSED_SUFFIX = " - only in unused content (nothing in the module reaches it)"
+
+
+# ---- area details (Areas page and the area's side panel) -----------------------------------------------------
+# Field -> (group, label) for an area's .are fields and the AreaProperties struct of its .git, in the order the page
+# shows them. Field meanings: BioWare's "Area File Format" (ARE/GIT) documents and the toolset's Area Properties
+# dialog. Fields not listed here are still shown, under "Other", with their raw values.
+AREA_FIELDS = [
+    ("General", "Name", "Name"), ("General", "Tag", "Tag"), ("General", "ResRef", "Resref"),
+    ("General", "Tileset", "Tileset"), ("General", "Width", "Width (tiles)"), ("General", "Height", "Height (tiles)"),
+    ("General", "Flags", "Type"), ("General", "Comments", "Comments"), ("General", "LoadScreenID", "Load screen (loadscreens.2da row)"),
+    ("Gameplay", "PlayerVsPlayer", "Player vs player"), ("Gameplay", "NoRest", "No rest"),
+    ("Gameplay", "ModSpotCheck", "Spot modifier"), ("Gameplay", "ModListenCheck", "Listen modifier"),
+    ("Day and night", "DayNightCycle", "Day/night cycle"), ("Day and night", "IsNight", "Always night"),
+    ("Day and night", "LightingScheme", "Lighting scheme (environment.2da row)"),
+    ("Day and night", "SunAmbientColor", "Sun ambient"), ("Day and night", "SunDiffuseColor", "Sun diffuse"),
+    ("Day and night", "SunShadows", "Sun shadows"), ("Day and night", "MoonAmbientColor", "Moon ambient"),
+    ("Day and night", "MoonDiffuseColor", "Moon diffuse"), ("Day and night", "MoonShadows", "Moon shadows"),
+    ("Day and night", "ShadowOpacity", "Shadow opacity (%)"), ("Day and night", "SkyBox", "Sky box (skyboxes.2da row)"),
+    ("Fog", "SunFogColor", "Day fog colour"), ("Fog", "SunFogAmount", "Day fog amount"),
+    ("Fog", "MoonFogColor", "Night fog colour"), ("Fog", "MoonFogAmount", "Night fog amount"),
+    ("Fog", "FogClipDist", "Fog clip distance"),
+    ("Weather", "ChanceRain", "Chance of rain (%)"), ("Weather", "ChanceSnow", "Chance of snow (%)"),
+    ("Weather", "ChanceLightning", "Chance of lightning (%)"), ("Weather", "WindPower", "Wind"),
+    ("Sound", "AreaProperties/MusicDay", "Music, day (ambientmusic.2da row)"),
+    ("Sound", "AreaProperties/MusicNight", "Music, night (ambientmusic.2da row)"),
+    ("Sound", "AreaProperties/MusicBattle", "Music, battle (ambientmusic.2da row)"),
+    ("Sound", "AreaProperties/MusicDelay", "Music delay (ms)"),
+    ("Sound", "AreaProperties/AmbientSndDay", "Ambient sound, day (ambientsound.2da row)"),
+    ("Sound", "AreaProperties/AmbientSndDayVol", "Ambient volume, day"),
+    ("Sound", "AreaProperties/AmbientSndNight", "Ambient sound, night (ambientsound.2da row)"),
+    ("Sound", "AreaProperties/AmbientSndNitVol", "Ambient volume, night"),
+    ("Sound", "AreaProperties/EnvAudio", "Environment audio (soundeax.2da row)"),
+    ("Scripts", "OnEnter", "OnEnter"), ("Scripts", "OnExit", "OnExit"), ("Scripts", "OnHeartbeat", "OnHeartbeat"),
+    ("Scripts", "OnUserDefined", "OnUserDefined")]
+# engine bookkeeping fields with nothing for a builder to act on (left out of "Other")
+AREA_SKIP = {"Creator_ID", "ID", "Version", "Expansion_List", "Tile_List", "Rooms"}
+PVP = {"0": "None", "1": "Party", "2": "Full", "3": "Server default"}
+WIND = {"0": "None", "1": "Weak", "2": "Strong"}
+YESNO = {"0": "no", "1": "yes"}
+
+
+def _area_value(field, value):
+    """A readable value for one area field: flags and settings spelled out, colours as #RRGGBB (the game stores a
+    colour as a dword in BGR order: 0x00BBGGRR), everything else as stored. Never raises."""
+    v = "" if value is None else str(value)
+    try:
+        if field == "Flags":
+            f = int(v or 0)       # ARE Flags: bit 0 interior, bit 1 underground, bit 2 natural
+            return ", ".join(("Interior" if f & 1 else "Exterior", "Underground" if f & 2 else "Above ground",
+                              "Natural" if f & 4 else "Urban"))
+        if field.endswith("Color"):
+            c = int(v or 0)
+            return "#%02X%02X%02X" % (c & 255, (c >> 8) & 255, (c >> 16) & 255)
+    except ValueError:
+        return v
+    if field == "PlayerVsPlayer":
+        return PVP.get(v, v)
+    if field == "WindPower":
+        return WIND.get(v, v)
+    if field in ("NoRest", "DayNightCycle", "IsNight", "SunShadows", "MoonShadows", "TileBrdrDisabled"):
+        return YESNO.get(v, v)
+    return v
+
+
+def area_details(db, only=None):
+    """{area resref: dict(props=[[group, label, value], ...], variables=[dict(name, type, value)], summary=[...])}.
+
+    db: the analysis index, read-only. Reads the winning copy (load order) of each area's .are (properties, event
+    scripts) and .git (AreaProperties: music and ambient sound; the area's own Variables - the VarTable at the top of
+    the .git, which is where the toolset keeps an area's variables). summary is a few words for the Areas table
+    (interior/exterior, natural/urban, PvP, no rest, always night). only: one area resref to read (the side
+    panel), or None for all. Never raises (an older index: {})."""
+    out = {}
+    try:
+        rank = n.source_rank_sql()
+        best = {}                                     # (resref, ext) -> file id of the copy the game uses
+        for fid, rr, ext, _r in db.execute(f"SELECT f.id, f.resref, f.ext, {rank} AS rk FROM files f JOIN sources s "
+                                            "ON s.id=f.source_id WHERE f.ext IN ('are','git') AND f.status='ok' "
+                                            + ("AND lower(f.resref)=? " if only else "") + "ORDER BY rk DESC",
+                                            (only.lower(),) if only else ()):
+            best[(rr.lower(), ext)] = fid             # ascending rank last wins: lowest rank (the winner) stays
+        fid_area = {fid: (rr, ext) for (rr, ext), fid in best.items()}
+        raw = defaultdict(dict)                       # resref -> {field path: value}
+        varrows = defaultdict(dict)                   # resref -> {"VarTable[i]": {Name, Type, Value}}
+        ids = ",".join(str(i) for i in fid_area) or "0"
+        for fid, path, value in db.execute(f"SELECT file_id, path, value FROM fields WHERE file_id IN ({ids})"):
+            rr, ext = fid_area[fid]
+            if ext == "are" and "/" not in path and "[" not in path:
+                raw[rr][path] = value
+            elif ext == "git" and path.startswith("AreaProperties/") and path.count("/") == 1:
+                raw[rr][path] = value
+            elif ext == "git" and path.startswith("VarTable[") and path.count("/") == 1:
+                pre, _, lab = path.partition("/")
+                varrows[rr].setdefault(pre, {})[lab] = value
+    except sqlite3.Error:
+        return out
+    import nwn_varaudit
+    known = {f for _g, f, _l in AREA_FIELDS}
+    for rr in set(raw) | set(varrows):
+        fields = raw.get(rr, {})
+        props = [[g_, lab, _area_value(f.split("/")[-1], fields[f])] for g_, f, lab in AREA_FIELDS if f in fields]
+        props += [["Other", f, _area_value(f, v)] for f, v in sorted(fields.items())
+                  if f not in known and f not in AREA_SKIP]
+        variables = []
+        for pre in sorted(varrows.get(rr, {}), key=lambda p: int(re.sub(r"\D", "", p) or 0)):
+            vr = varrows[rr][pre]
+            if vr.get("Name"):
+                t = nwn_varaudit.VT_TYPES.get(str(vr.get("Type", "")), "int")
+                variables.append(dict(name=vr["Name"], type=t,
+                                      value=vr.get("Value") if vr.get("Value") is not None else f"({t})"))
+        summary = []
+        if "Flags" in fields:
+            summary += _area_value("Flags", fields["Flags"]).split(", ")[0:3:2]      # Interior/Exterior, Natural/Urban
+        if fields.get("PlayerVsPlayer") not in (None, "3"):
+            summary.append("PvP " + PVP.get(str(fields["PlayerVsPlayer"]), str(fields["PlayerVsPlayer"])).lower())
+        if str(fields.get("NoRest")) == "1":
+            summary.append("no rest")
+        if str(fields.get("DayNightCycle")) == "0":
+            summary.append("always night" if str(fields.get("IsNight")) == "1" else "always day")
+        out[rr] = dict(props=props, variables=variables, summary=summary)
+    return out
+
+
+# Event slot field -> the name the toolset shows (creatures keep their scripts in Script* fields; other objects and
+# areas use On* names already; the module uses Mod_On*).
+EVENT_NAMES = {"ScriptAttacked": "OnPhysicalAttacked", "ScriptDamaged": "OnDamaged", "ScriptDeath": "OnDeath",
+               "ScriptDialogue": "OnConversation", "ScriptDisturbed": "OnDisturbed", "ScriptEndRound": "OnEndCombatRound",
+               "ScriptHeartbeat": "OnHeartbeat", "ScriptOnBlocked": "OnBlocked", "ScriptOnNotice": "OnPerception",
+               "ScriptRested": "OnRested", "ScriptSpawn": "OnSpawn", "ScriptSpellAt": "OnSpellCastAt",
+               "ScriptUserDefine": "OnUserDefined"}
+# fields that are lists of other things: shown as a count, the things themselves have their own entries
+LIST_LABELS = {"ItemList": "Inventory items", "Equip_ItemList": "Equipped items", "PropertiesList": "Item properties",
+               "FeatList": "Feats", "SkillList": "Skills", "ClassList": "Classes", "SpecAbilityList": "Special abilities",
+               "TemplateList": "Pages", "CreatureList": "Encounter creatures", "SpawnPointList": "Spawn points",
+               "Geometry": "Shape points", "StoreList": "Store pages", "WillNotBuy": "Will not buy",
+               "WillOnlyBuy": "Will only buy", "VarTable": None}
+
+
+def object_details(db, g, node):
+    """Everything set on one object, for its side panel: dict(scripts, variables, props) or None.
+
+    db: the analysis index (read-only); g: the graph (to say whether a named script exists); node: "bp:<resref>.<ext>"
+    (a blueprint), "inst:<area>:<path>" (a placed object - its struct in the area's .git), "area:<resref>" or
+    "module". scripts: every event slot with a script, [dict(event, field, script, found)] - found is False when no
+    module, hak or base-game copy is known; variables: the object's own Variables, [dict(name, type, value)]; props:
+    [[group, label, value]] - every other single value set on it, lists shown as counts. Areas get area_details'
+    properties instead. Reads the copy the game uses. Never raises (None when the object has no readable file)."""
+    try:
+        if node == "module":
+            rows = db.execute("SELECT f.id FROM files f WHERE f.ext='ifo' AND f.status='ok' LIMIT 1").fetchall()
+            fid, prefix = (rows[0][0] if rows else None), ""
+        elif node.startswith("area:"):
+            rows = db.execute("SELECT f.id FROM files f JOIN sources s ON s.id=f.source_id WHERE f.ext='are' AND "
+                              f"lower(f.resref)=? AND f.status='ok' ORDER BY {n.source_rank_sql()} LIMIT 1",
+                              (node[5:].lower(),)).fetchall()
+            fid, prefix = (rows[0][0] if rows else None), ""
+        elif node.startswith("bp:") and "." in node:
+            rr, _, ext = node[3:].rpartition(".")
+            rows = db.execute("SELECT f.id FROM files f JOIN sources s ON s.id=f.source_id WHERE lower(f.resref)=? AND "
+                              f"f.ext=? AND f.status='ok' ORDER BY {n.source_rank_sql()} LIMIT 1",
+                              (rr.lower(), ext)).fetchall()
+            fid, prefix = (rows[0][0] if rows else None), ""
+        elif node.startswith("inst:"):
+            row = db.execute("SELECT file_id, path FROM objects WHERE node=?", (node,)).fetchone()
+            fid, prefix = (row[0], row[1] + "/") if row else (None, "")
+        else:
+            return None
+        if fid is None:
+            return None
+        # substr, not LIKE: the prefix holds "[n]", and an index's paths are compared as plain text
+        rows = db.execute("SELECT path, label, type, value FROM fields WHERE file_id=? AND substr(path, 1, ?)=?",
+                          (fid, len(prefix), prefix)).fetchall()
+    except sqlite3.Error:
+        return None
+    if node.startswith("area:"):
+        det = area_details(db, node[5:]).get(node[5:].lower(), {})
+        scripts = [dict(event=lab, field=lab, script=v, found=_script_found(g, v))
+                   for grp, lab, v in det.get("props", []) if grp == "Scripts" and v]
+        return dict(scripts=scripts, variables=det.get("variables", []),
+                    props=[p_ for p_ in det.get("props", []) if p_[0] != "Scripts"])
+    scripts, variables, props, counts = [], {}, [], defaultdict(int)
+    for path, label, typ, value in rows:
+        rest = path[len(prefix):]
+        if "/" not in rest and "[" not in rest:                  # a single value directly on the object
+            if typ == "resref" and (nwn_index.SCRIPT_LABEL_RE.match(label) or label in ("EndConversation", "EndConverAbort")):
+                if value:
+                    nm = EVENT_NAMES.get(label, label[4:] if label.startswith("Mod_") else label)
+                    scripts.append(dict(event=nm, field=label, script=value, found=_script_found(g, value)))
+            elif typ not in ("list", "struct"):
+                props.append(["Properties", label, _area_value(label, value)])
+            continue
+        top = rest.split("/", 1)[0]
+        lst = top.split("[", 1)[0]
+        if lst == "VarTable" and rest.count("/") == 1:
+            variables.setdefault(top, {})[label] = value
+        elif "[" in top and rest.count("/") == 1:              # one entry of a list (inventory, properties ...)
+            counts[(lst, top)] = 1
+    for lst in sorted({k[0] for k in counts}):
+        props.append(["Lists", LIST_LABELS.get(lst) or lst, str(sum(1 for k in counts if k[0] == lst))])
+    import nwn_varaudit
+    vs = []
+    for top in sorted(variables, key=lambda t: int(re.sub(r"\D", "", t) or 0)):
+        vr = variables[top]
+        if vr.get("Name"):
+            t = nwn_varaudit.VT_TYPES.get(str(vr.get("Type", "")), "int")
+            vs.append(dict(name=vr["Name"], type=t, value=vr.get("Value") if vr.get("Value") is not None else f"({t})"))
+    out = dict(scripts=scripts, variables=vs, props=props)
+    if node.endswith(".uti") or (node.startswith("inst:") and any(p_[1] == "BaseItem" for p_ in props)):
+        out["item_scripts"] = item_scripts(db, g, node, next((p_[2] for p_ in props if p_[1] == "Tag"), ""),
+                                           next((p_[2] for p_ in props if p_[1] in ("TemplateResRef", "InventoryRes")), ""))
+    return out
+
+
+# x2_inc_switches: what a tag-based item script is told happened (GetUserDefinedItemEventNumber())
+ITEM_EVENTS = {"ACTIVATE": "activated (Unique Power)", "EQUIP": "equipped", "UNEQUIP": "unequipped",
+               "ONHITCAST": "on hit (OnHitCastSpell)", "ACQUIRE": "acquired", "UNACQUIRE": "lost / dropped",
+               "SPELLCAST_AT": "a spell cast at it"}
+# module.ifo item events, which run a module's tag-based item scripts (x2_mod_def_act and the like)
+MODULE_ITEM_EVENTS = {"Mod_OnActvtItem": "OnActivateItem", "Mod_OnAcquirItem": "OnAcquireItem",
+                      "Mod_OnUnAqreItem": "OnUnAcquireItem", "Mod_OnPlrEqItm": "OnPlayerEquipItem",
+                      "Mod_OnPlrUnEqItm": "OnPlayerUnEquipItem"}
+
+
+def item_scripts(db, g, node, tag, resref=""):
+    """Where an item's scripts live in the module (the owner: show "where in the module there is a tag based script
+    related to the item"). dict(tag, tag_based=[dict(script, how, events, found)], module_events=[dict(event,
+    script)], lookups=[dict(node, label, via)]):
+      tag_based - the scripts the game runs for this item by name (<prefix><tag>, or its resref when a module script
+                  runs ExecuteScript(GetResRef(...))), as the index linked them, with the item events each one
+                  handles (X2_ITEM_EVENT_* in its source; [] when it doesn't check - it then runs for every event);
+      module_events - the module's item events and the scripts in them, which are what call the tag-based script;
+      lookups - scripts and conversations that name the item's tag (GetItemPossessedBy, GetObjectByTag, a
+                comparison with GetTag ...), with the line.
+    node: the item blueprint or a placed/carried item; its blueprint's links count too. Never raises."""
+    holders = [node]
+    if resref:
+        holders.append(f"bp:{resref.lower()}.uti")
+    tb, seen = [], set()
+    for h_ in holders:
+        for d, k, v in (g.fwd.get(h_, []) if g is not None else []):
+            if k == "tag_based_script" and d not in seen:
+                seen.add(d)
+                src = ""
+                try:
+                    row = db.execute("SELECT source FROM scripts WHERE name=?", (d[7:],)).fetchone()
+                    src = nwn_index.lex_nss(row[0])[0] if row and row[0] else ""
+                except sqlite3.Error:
+                    pass
+                evs = [ITEM_EVENTS[e] for e in ITEM_EVENTS if re.search(r"\bX2_ITEM_EVENT_" + e + r"\b", src)]
+                tb.append(dict(script=d[7:], how=v or "tag-based script", events=evs, found=_script_found(g, d[7:])))
+    mods = [dict(event=MODULE_ITEM_EVENTS[v], script=d[7:]) for d, k, v in (g.fwd.get("module", []) if g is not None else [])
+            if k == "module_event" and v in MODULE_ITEM_EVENTS]
+    looks = []
+    if tag and g is not None:
+        for s_, k, v in g.rev.get(f"tag:{tag}", []):
+            if k in ("tag_ref", "literal_match") and len(looks) < 100:
+                looks.append(dict(node=s_, label=g.label(s_), via=v or ""))
+    return dict(tag=tag, tag_based=tb, module_events=mods, lookups=looks)
+
+
+def _script_found(g, name):
+    """Does a script of this name exist in the module, a loaded hak or the loaded base game? (the graph's node)"""
+    nd = g.nodes.get(f"script:{str(name).lower()}") if g is not None else None
+    return bool(nd and nd.get("in_module"))
 
 
 def missing_script_issues(db, g, not_loaded_hint=""):
@@ -1578,6 +1843,7 @@ def run_analysis(out_dir, verbose=True):
         if not o["is_bp"] and o["tag"]:
             tag_area.setdefault(o["tag"], o["area"])
     listed = {d for d, k, v in g.fwd.get("module", []) if k == "module_area"}
+    details = area_details(db)
     areas = []
     for nid, nd in g.nodes.items():
         if nd["type"] != "area" or not nd["in_module"]:
@@ -1604,7 +1870,9 @@ def run_analysis(out_dir, verbose=True):
         areas.append(dict(node=nid, resref=ar, label=nd["label"], in_module_list=nid in listed,
                           counts=dict(counts), scripts=[dict(event=v, script=d[7:]) for d, k, v in g.fwd.get(nid, [])
                                                         if k == "event_script"],
-                          transitions=transitions, impact=impact.get(nid, {}).get("level", "None")))
+                          transitions=transitions, impact=impact.get(nid, {}).get("level", "None"),
+                          # all of the area's properties, its own Variables and a short summary (area_details)
+                          **details.get(ar.lower(), dict(props=[], variables=[], summary=[]))))
     convs = []
 
     def speaker_areas(nid):
@@ -2157,6 +2425,20 @@ def run_analysis(out_dir, verbose=True):
         if verbose:
             print("  performance checks failed:", ex)
 
+    # ------------------------------------------------------------- area transitions, minimaps, area environment
+    # (nwn_minimap.map_checks: names and positions only - the pictures are drawn when the Map page is first opened)
+    nwn_progress.stage("analysis", "Analysis: area transitions and minimaps")
+    try:
+        import nwn_minimap
+        map_issues, map_summary = nwn_minimap.map_checks(db, meta.get("nwn_root") or None, g.label)
+        issues += map_issues
+        if verbose and map_summary.get("error"):
+            print(" ", map_summary["error"])
+    except Exception as ex:  # noqa - a check must never stop the analysis
+        map_summary = dict(error=f"map checks failed: {ex}")
+        if verbose:
+            print("  map checks failed:", ex)
+
     # ------------------------------------------------------------- known NWN:EE pitfalls (nwn_lints)
     try:
         import nwn_lints
@@ -2228,12 +2510,15 @@ def run_analysis(out_dir, verbose=True):
     summary["asset_duplicate_groups"] = len(asset_dups)
     report = dict(summary=summary, issues=issues, scripts=scripts, items=items, orphan_instances=orphan_instances,
                   orphans=orphans, skins=skins, ai_findings=ai_findings, performance=performance,
-                  duplicates=dups, merge_rules=2, noise_rules=2, asset_duplicates=asset_dups, deletions=deletions, areas=areas, conversations=convs, conversation_dynamic_starts=dyn_starts[:300], quests=quests,
+                  duplicates=dups, merge_rules=2, noise_rules=2, area_details=1, map_summary=map_summary,
+                  asset_duplicates=asset_dups, deletions=deletions, areas=areas, conversations=convs, conversation_dynamic_starts=dyn_starts[:300], quests=quests,
                   inferred_quests=inferred, var_audit=var_audit, pw_performance=pw_perf, factions=factions, databases=databases,
                   files=file_rows, models=models, hierarchy=g.hierarchy(),
                   breadcrumbs={nid: g.breadcrumb(nid) for nid in g.nodes if nid.startswith("inst:")},
                   impact=impact,
                   labels={nid: nd["label"] for nid, nd in g.nodes.items()})
+    if not map_summary.get("error"):
+        report["map_checks"] = 1         # REANALYSE: left out when the checks failed, so Overview offers Analyse again
     nwn_progress.stage("analysis", "Analysis: writing reports")
     write_csvs(out_dir, report)          # CSVs carry everything (all hak files, every impact row)
     module_nodes = {f["node"] for f in module_files}
@@ -2468,6 +2753,20 @@ def write_csvs(out_dir, r, only=None):
     w("conversations.csv", [dict(c, started_by=[f"{x['script']}:{x['line']} {x['how']}" for x in c.get("started_by", [])])
                             for c in r.get("conversations", [])],
       ["name", "areas", "used_by", "started_by", "scripts", "quests", "entries", "replies", "words", "impact"])
+    # areas: one row per area with every property as its own column (labels as the side panel shows them), then
+    # one row per area variable
+    ars = r.get("areas", [])
+    pcols = []
+    for a in ars:
+        for grp, lab, _v in a.get("props", []):
+            if lab not in pcols:
+                pcols.append(lab)
+    w("areas.csv", [dict({lab: v for _g, lab, v in a.get("props", [])}, area=a["label"], resref=a["resref"],
+                         settings=a.get("summary", []), variables=[f"{v['name']}={v['value']}" for v in a.get("variables", [])],
+                         scripts=[f"{x['event']}: {x['script']}" for x in a.get("scripts", [])], impact=a.get("impact"))
+                    for a in ars], ["area", "resref", "settings", "scripts", "variables", "impact"] + pcols)
+    w("area_variables.csv", [dict(v, area=a["label"], resref=a["resref"]) for a in ars for v in a.get("variables", [])],
+      ["area", "resref", "name", "type", "value"])
     iq = (r.get("inferred_quests") or {}).get("quests", [])
     w("inferred_quests.csv", [dict(q, stages=[f"{s['value']}: set by {len(s['set_by'])}, checked by {len(s['checked_by'])}" for s in q["stages"]],
                                    problems=[p["text"] for p in q["problems"]], givers=q["givers"],

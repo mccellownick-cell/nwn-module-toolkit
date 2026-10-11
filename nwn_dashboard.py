@@ -128,6 +128,7 @@ import nwn_compile
 import nwn_edit
 import nwn_hakedit
 import nwn_index
+import nwn_minimap
 import nwn_logs
 import nwn_nasher
 import nwn_palette
@@ -456,7 +457,7 @@ DATA_FILES = ("index.sqlite", "index.sqlite-journal", "index.sqlite-wal", "index
               "index.state.tmp", "index.done", "report.json", "catalog.json", "compile.json", "palette.json",
               "palette.json.tmp", INCOMPLETE,
               nwn_progress.RUN_LOCK, "analysis_archive.zip", "analysis_archive.zip.tmp", "archive.json")
-DATA_DIRS = ("json", "conversations", "reports", ".unpack_tmp")
+DATA_DIRS = ("json", "conversations", "reports", ".unpack_tmp", "maps", "maps.tmp", "maps.old")
 # Your own work: only deleted when you tick it (and type the analysis name).
 USER_PARTS = {"edits": ("edits", "palette_moves.json", "blueprint_changes.json"), "build": ("build",),
               "descriptions": ("descriptions.json", "batches", "accepted_issues.json", "server_config.json",
@@ -1133,6 +1134,93 @@ def palette_data(d):
         return nwn_palette.build_palette(d)
 
 
+MAP_LOCK = threading.Lock()          # one map build at a time: two page loads must not both write maps/
+
+
+def _saved_map(d):
+    """maps/map.json of analysis folder d when it is newer than the index and of the current version, else None."""
+    p = os.path.join(d, "maps", "map.json")
+    try:
+        if os.path.getmtime(p) >= os.path.getmtime(os.path.join(d, "index.sqlite")):
+            data = _json_file(p, None)
+            if isinstance(data, dict) and data.get("version") == nwn_minimap.MAP_VERSION:
+                return data
+    except (OSError, ValueError):
+        pass                             # missing or unreadable: to be drawn again
+    return None
+
+
+def map_data(d, progress=None):
+    """The Map page data of analysis folder d: the saved maps when they are current, otherwise drawn now
+    (nwn_minimap.build_maps - up to a minute for a big module) and saved, so analyses made before the page existed
+    need no re-analysis. progress(pct, msg) is passed to build_maps. Writes only <d>/maps; never the module, haks or
+    game."""
+    with MAP_LOCK:
+        return _saved_map(d) or nwn_minimap.build_maps(d, progress)
+
+
+def api_map(q):
+    """Map page: the map data when it is already drawn; otherwise a job that draws it (kind "map"), so the page can
+    show a pop-up with progress and Stop instead of waiting on a silent request. Reply: the map data, or
+    dict(building=True, job=<id>) - the same job when one is already drawing this analysis's map."""
+    name = q.get("a")
+    d = analysis_dir(name)
+    data = _saved_map(d)
+    if data is not None:
+        return data
+    key = f"map:{name}"
+    with LOCK:
+        running = next((j for j in JOBS.values() if j.status == "running" and j.key == key), None)
+    if running:
+        return dict(building=True, job=running.id)
+
+    def work(job):
+        """The worker: draw the maps, turning build_maps' progress into the pop-up's % and an estimate of time left."""
+        cb = _job_progress(job)
+
+        def progress(pct, msg):
+            el = time.time() - job.started
+            left = el * (100 - pct) / pct if pct >= 5 else None
+            cb(pct, msg + (f" · about {int(left) + 1} s left" if left is not None and pct < 99 else ""))
+        map_data(d, progress)
+        return dict(done=True)
+    return dict(building=True, job=run_job("map", work, key=key))
+
+
+def api_map_png(q):
+    """Map page: the picture of map number r (maps/r<r>.png, drawn by map_data). r must be a whole number, so the
+    request can only ever name a file map_data wrote."""
+    d = analysis_dir(q.get("a"))
+    r = q.get("r", "")
+    if not r.isdigit():
+        return Reply(400, {"error": "r must be a map number"})
+    p = os.path.join(d, "maps", f"r{int(r)}.png")
+    if not os.path.isfile(p):
+        return Reply(404, {"error": "no such map - open the Map page first"})
+    with open(p, "rb") as fh:
+        return Reply(200, fh.read(), "image/png", {"Cache-Control": "no-store"})
+
+
+def api_map_export(q):
+    """Map page Export: one map (r=<number>) or one area (area=<resref>) as a PNG download at 16 pixels per tile,
+    drawn now (nwn_minimap.export_png). Read-only."""
+    d = analysis_dir(q.get("a"))
+    area = q.get("area")
+    try:
+        if area:
+            if not re.fullmatch(r"[A-Za-z0-9_\-]{1,32}", area):
+                return Reply(400, {"error": "bad area name"})
+            png, name = nwn_minimap.export_png(d, area=area), f"{area}_minimap.png"
+        else:
+            r = q.get("r", "")
+            if not r.isdigit():
+                return Reply(400, {"error": "r must be a map number"})
+            png, name = nwn_minimap.export_png(d, region=int(r)), f"{q.get('a')}_map_{int(r)}.png"
+    except ValueError as ex:
+        return Reply(404, {"error": str(ex)})
+    return Reply(200, png, "image/png", {"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 def api_palette_move(b):
     """Blueprints page: make blueprints wait to move to another palette category (applied by the next build).
     Fields: a, ext (blueprint type, e.g. "uti"), resrefs (list of names), to (category number). Returns
@@ -1760,6 +1848,9 @@ def node_details(name, node):
             row = db.execute("SELECT class, template, tag, name, area, x, y, z FROM objects WHERE node=?", (node,)).fetchone()
             if row:
                 out["object"] = dict(zip(("class", "template", "tag", "name", "area", "x", "y", "z"), row))
+        if node == "module" or node.startswith(("bp:", "inst:", "area:")):
+            # every event script, the object's own Variables and its other settings (nwn_analysis.object_details)
+            out["details"] = nwn_analysis.object_details(db, g, node)
         if node.startswith("model:"):
             row = db.execute("SELECT format, supermodel, textures FROM models WHERE name=?", (node[6:],)).fetchone()
             if row:
@@ -2436,6 +2527,10 @@ GET_ROUTES = {
     "/api/install/state": api_install_state,                            # the last Add to game folders (installed.json)
     # Hak catalogue page: catalog.json ({} when the analysis has none)
     "/api/catalog": lambda q: _json_file(os.path.join(analysis_dir(q.get("a")), "catalog.json"), {}),
+    # Map page: every area's minimap, areas joined edge to edge, transition checks (maps/, drawn on first use)
+    "/api/map": api_map,
+    "/api/map/png": api_map_png,
+    "/api/map/export": api_map_export,
     # Blueprints page: every custom blueprint and its palette category (palette.json, built on first use)
     "/api/palette": lambda q: palette_data(analysis_dir(q.get("a"))),
     # Blueprints page: moves waiting for the next build (palette_moves.json; {} when none)

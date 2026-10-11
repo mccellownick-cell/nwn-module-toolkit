@@ -105,6 +105,7 @@ details.tn>summary{cursor:pointer;list-style:none} details.tn>summary::before{co
 .path{font-size:12px;color:var(--ink-2)}
 .path span.k{color:var(--ink-3)}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
+.swatch{display:inline-block;width:12px;height:12px;border:1px solid var(--line, #888);border-radius:2px;margin-right:6px;vertical-align:-1px}
 .chip{background:var(--surface-2);border-radius:999px;padding:1px 8px;font-size:12px}
 .thumb{width:48px;height:48px;object-fit:contain;background:repeating-conic-gradient(var(--surface-2) 0 25%,transparent 0 50%) 0 0/12px 12px;border-radius:4px;border:1px solid var(--line)}
 .preview{max-width:256px;max-height:256px;background:repeating-conic-gradient(var(--surface-2) 0 25%,transparent 0 50%) 0 0/16px 16px;border:1px solid var(--line);border-radius:6px}
@@ -162,6 +163,20 @@ textarea.code{width:100%;min-height:320px;font:12.5px/1.5 ui-monospace,Consolas,
   .bars .bar{grid-template-columns:110px 1fr 40px}
   .filters input[type=search]{min-width:0;width:100%}
 }
+/* Map page: a scrollable stage with the map picture and clickable area outlines, beside the chosen area's card */
+.mapgrid{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.mapstage{flex:1 1 560px;min-width:0;max-height:72vh;overflow:auto;background:#141619;border:1px solid var(--line);border-radius:var(--radius)}
+.mapwrap{position:relative;transform-origin:0 0;margin:12px}
+.mapwrap img{display:block;image-rendering:pixelated}.mapwrap svg{position:absolute;left:0;top:0}
+.mapwrap .ar{fill:transparent;stroke:rgba(255,255,255,.08);cursor:pointer}.mapwrap .ar:hover,.mapwrap .ar.on{fill:rgba(57,135,229,.18);stroke:var(--accent);stroke-width:2}
+.mapwrap .ar.ov{stroke:var(--critical);stroke-dasharray:7 5;stroke-width:2}
+.mapwrap .lb{fill:#fff;paint-order:stroke;stroke:#000;stroke-width:.25em;pointer-events:none;font-family:system-ui,sans-serif}
+.mappanel{flex:0 1 380px;min-width:280px}.mapcrop{overflow:hidden;border:1px solid var(--line);margin:8px 0;background:#141619}
+.mapcrop img{image-rendering:pixelated;transform-origin:0 0;display:block}
+.mapbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}.mapbar select{max-width:100%}
+.mapkey i{display:inline-block;width:10px;height:10px;margin:0 4px 0 10px;vertical-align:-1px;border-radius:2px}
+.maptr{padding:5px 0;border-bottom:1px solid var(--line)}
+.mapbar a.btn,.mappanel a.btn{text-decoration:none;color:var(--ink);display:inline-block;font-size:13px;padding:4px 10px}
 </style>
 <!--STATIC_DATA-->
 </head>
@@ -471,7 +486,7 @@ const has = (q, ...vals) => !q || vals.some(v => String(v ?? "").toLowerCase().i
 const NAV = [
   ["Start", [["home","Modules"],["housekeep","Modules folder"],["compare","Compare modules"],["help","Help / manual"]]],
   ["Analysis", [["overview","Overview"],["issues","Issues"],["scripts","Scripts"],["items","Items"],["blueprints","Blueprints"],["duplicates","Duplicates"],
-                ["hierarchy","Hierarchy"],["areas","Areas"],["conversations","Conversations"],["quests","Quest health"],["factions","Factions"],["database","Database"],
+                ["hierarchy","Hierarchy"],["areas","Areas"],["map","Map"],["conversations","Conversations"],["quests","Quest health"],["factions","Factions"],["database","Database"],
                 ["vars","Variables & tags"],["perf","Performance"],["orphans","Orphans"],["skins","Skins & hides"],["catalog","Hak catalogue"],
                 ["impact","Impact explorer"],["files","All files"]]],
   ["Edit", [["find","Find & replace"],["generator","Script generator"],["edits","My edits"],["haks","Hak editor"]]],
@@ -492,7 +507,7 @@ function counts(){
 function renderNav(){
   const c = counts();
   $("#navItems").innerHTML = NAV.map(([g, items]) => `<div class="group">${g}</div>` + items.map(([k, l]) => {
-    const dis = !NO_MODULE.includes(k) && !S.rep; const hide = STATIC && (k === "home" || k === "help" || k === "haks" || k === "housekeep" || k === "compare" || k === "generator" || k === "edits" || k === "find" || (k === "logs" && !STATIC.logs) || (k === "build" && !(STATIC.build && STATIC.build.audit)));
+    const dis = !NO_MODULE.includes(k) && !S.rep; const hide = STATIC && (k === "map" || k === "home" || k === "help" || k === "haks" || k === "housekeep" || k === "compare" || k === "generator" || k === "edits" || k === "find" || (k === "logs" && !STATIC.logs) || (k === "build" && !(STATIC.build && STATIC.build.audit)));
     return hide ? "" : `<button class="nv ${S.view===k?"on":""}" data-v="${k}" ${dis?"disabled":""}>${l}<span class="cnt">${c[k]!=null?fmtN(c[k]):""}</span></button>`;}).join("")).join("");
   $("#navItems").querySelectorAll("button.nv").forEach(b => b.onclick = () => go(b.dataset.v));
   $("#navFoot").textContent = S.version ? "Version: " + S.version : "";
@@ -511,6 +526,13 @@ function renderNav(){
 // Leaving the 2da editor with unsaved changes asks first.
 function go(v, fromHistory){
   if (TD.dirty && $("#tdGrid")){ leaveTwoda().then(ok => ok ? go(v, fromHistory) : fromHistory && restoreHash()); return; }
+  // another page: the side panel belongs to the page it was opened on, so it closes (asking first when an editor in
+  // it holds unsaved text); redrawing the same page keeps it open
+  const dr = $("#drawer");
+  if (dr && !dr.hidden && S.view !== v){
+    if (drawerDirty()){ leaveDrawer().then(ok => { if (ok){ dr.hidden = true; go(v, fromHistory); } else if (fromHistory) restoreHash(); }); return; }
+    dr.hidden = true;
+  }
   // each page is a browser history entry: Back / Forward move between pages instead of leaving the dashboard
   if (!fromHistory && S.view !== v){ try { history.pushState({v, a: S.cur}, "", "#" + v); } catch(e){} }
   S.view = v; renderNav(); const m = $("#main"); m.scrollTop = 0;
@@ -716,7 +738,7 @@ function toolkitParent(){
 // jobModal(title, id): a small window with a progress bar and Stop while job id runs; resolves with the last
 // /api/job reply once it has ended (the window closes itself).
 async function jobModal(title, id){
-  const md = h(`<div class="modal"><div class="box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="bh"><b>${esc(title)}</b></div><div class="bb small"><div class="track"><div class="fill" id="cpf" style="width:0%"></div></div><p id="cpm" class="muted">starting</p></div><div class="bf row"><span class="grow"></span><button class="btn" id="cpstop">Stop</button></div></div></div>`);
+  const md = h(`<div class="modal"><div class="box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="bh"><b>${esc(title)}</b></div><div class="bb small"><div class="bars"><div class="track"><div class="fill" id="cpf" style="width:0%;transition:width .5s"></div></div></div><p id="cpm" class="muted">starting</p></div><div class="bf row"><span class="grow"></span><button class="btn" id="cpstop">Stop</button></div></div></div>`);
   const close = openModal(md, () => {}, $("#cpstop", md));
   $("#cpstop", md).onclick = async () => { $("#cpstop", md).disabled = true; try { await post("/api/job/stop", {id}); } catch(e){} };
   const d = await waitJob(id, x => { $("#cpf", md).style.width = `${x.pct || 0}%`; $("#cpm", md).textContent = x.msg || ""; });
@@ -2038,19 +2060,24 @@ VIEWS.hierarchy = (m) => {
 // name set, impact, or whether the module's area list includes it.
 VIEWS.areas = (m) => {
   const r = S.rep;
-  m.innerHTML = `<h1>Areas</h1><p class="sub">Each area with its contents, event scripts and transitions.</p><div class="filters" id="fb"></div><div id="t"></div>`;
+  m.innerHTML = `<h1>Areas</h1><p class="sub">Each area with its settings, its own variables, contents, event scripts and transitions. Click an area for every property (lighting, fog, weather, music and sound, load screen...), all its variables with their values, and what uses it.</p><div class="filters" id="fb"></div><div id="t"></div>`;
   const asets = nameSets(r.areas.map(a => a.resref || a.label));
   const t = new GroupedTable($("#t", m), {rows: r.areas, onRow: a => openNode(a.node), badge: rs => worstLv(rs),
     describe: (rs, k, g) => g.startsWith("set") || g.startsWith("region") ? exampleNames(rs, a => plainName(a.label), 3) : "",
     groupings: {"region (area name before ' - ')": a => regionOf(a.label),
-      "set (shared name)": a => asets.get(a.resref || a.label), "impact": a => a.impact, "in module list": a => a.in_module_list ? "In the module's area list" : "Not in the module's area list"}, order: {"impact": lvOrder},
+      "set (shared name)": a => asets.get(a.resref || a.label), "impact": a => a.impact, "in module list": a => a.in_module_list ? "In the module's area list" : "Not in the module's area list",
+      "interior / exterior": a => ((a.summary || [])[0]) || "(not known)", "has variables": a => (a.variables || []).length ? "Has variables" : "No variables"}, order: {"impact": lvOrder},
     columns: [
     {key:"label", label:"Area", render: a => nl(a.node, a.label) + (a.in_module_list ? "" : ` <span class="badge sv-warning"><i></i>not in module list</span>`)},
+    {key:"summary", label:"Settings", render: a => `<span class="small">${(a.summary || []).map(esc).join(" · ")}</span>`, sort: a => (a.summary || []).join(" ")},
+    {key:"variables", label:"Variables", render: a => { const v = a.variables || []; return v.length ? `<span class="small"><b>${v.length}</b>: ${v.slice(0, 3).map(x => `<span class="mono">${esc(x.name)}</span>`).join(", ")}${v.length > 3 ? " …" : ""}</span>` : `<span class="small muted">-</span>`; }, sort: a => (a.variables || []).length},
     {key:"counts", label:"Contents", render: a => `<span class="small">${Object.entries(a.counts).map(([k,v]) => `${v} ${esc(k)}${v>1?"s":""}`).join(", ")}</span>`, sort: a => Object.values(a.counts).reduce((x,y)=>x+y,0)},
     {key:"scripts", label:"Event scripts", render: a => a.scripts.map(s => `<span class="small">${esc(s.event)}: ${nl("script:"+s.script, s.script)}</span>`).join("<br>")},
     {key:"transitions", label:"Transitions", render: a => a.transitions.map(x => `<span class="small">${esc(x.frm)} → ${x.to_area?nl("area:"+x.to_area, label("area:"+x.to_area)):`<span class="muted">tag ${esc(x.to_tag)} (not found)</span>`}</span>`).join("<br>")},
     {key:"impact", label:"Impact", render: a => lvBadge(a.impact), sort: a => LV.indexOf(a.impact)}]});
-  filterBar($("#fb", m), [{id:"q", type:"search", label:"Search areas…"}], f => t.set(r.areas.filter(a => has(f.q, a.label, a.resref))));
+  // the search also finds an area by a variable's name or value, a script, or any property value (e.g. a tileset)
+  filterBar($("#fb", m), [{id:"q", type:"search", label:"Search areas, variables, scripts, settings…"}], f => t.set(r.areas.filter(a => has(f.q, a.label, a.resref,
+    ...(a.variables || []).map(v => v.name + " " + v.value), ...a.scripts.map(x => x.script), ...(a.props || []).map(p => p[2])))));
 };
 
 // Conversations page: grouped by name set, the speaker's area or region, how it starts, quest role or use.
@@ -2795,6 +2822,133 @@ VIEWS.skins = (m) => {
 
 // Hak catalogue page: /api/catalog (catalog.json; embedded in the static report) - haks, load order, talk table,
 // 2da conflicts, missing head models, 2da rows used, tilesets and shadowed resources.
+// ---------------------------------------------------------------- map
+// Map page (/api/map, drawn by nwn_minimap on first use): every area's minimap from its tileset's images, areas that
+// join edge to edge drawn as one map, and the checks on every area transition. Two tabs: Map (pick a map, zoom, click
+// an area for its card: its minimap, problems, ways out and in) and Checks (every finding, with how to fix it).
+// The same findings, except the map-only note map_does_not_close, are on the Issues page.
+const MAPCHECK = {dest_missing: "destination missing", dest_case: "destination differs in capitals", dest_missing_scripted: "destination missing (script may jump)",
+  dest_area_missing: "destination area not in module", dest_outside: "destination outside its area", dest_type: "door / waypoint mix-up",
+  dest_ambiguous: "several destinations share the tag", no_link_flag: "link switched off", not_a_transition: "trigger is not a transition",
+  lands_in_transition: "arrives inside another transition", one_way: "one-way", return_far: "way back lands far away", edge_mismatch: "edges don't match",
+  map_does_not_close: "areas overlap on the map", minimap_missing: "minimap image missing", minimap_unreadable: "minimap image in a format the page can't read",
+  tileset_missing: "tileset missing", tileset_unreadable: "tileset file damaged", env_underground_outdoor: "set to Underground but outdoors",
+  env_above_ground_cave: "set to Above ground but a cave"};
+VIEWS.map = async (m) => {
+  if (STATIC){ m.innerHTML = `<h1>Map</h1><p class="muted">The map is drawn by the dashboard; it is not part of the static report.</p>`; return; }
+  const cur = S.cur;
+  m.innerHTML = `<h1>Map</h1><p class="muted">Opening the map…</p>`;
+  let D_; try {
+    D_ = await api(`/api/map?a=${encodeURIComponent(cur)}`);
+    if (D_.building){
+      // the first time for a module the map is drawn by a job: a pop-up shows what it is doing, how far it is and
+      // about how long is left, with Stop; the page under it says the same in case the pop-up is closed
+      m.innerHTML = `<h1>Map</h1><div class="note">Drawing the map for the first time: every area's tiles and minimap images are read and drawn (about half a minute for a big module). After this it opens at once, until you analyse again.</div>`;
+      const j = await jobModal("Drawing the map…", D_.job);
+      if (j.status !== "done"){
+        if (S.view === "map" && S.cur === cur) m.innerHTML = `<h1>Map</h1><div class="note warn">${j.status === "stopped" ? "Stopped - nothing was saved." : esc((j.lines || []).find(l => l.startsWith("ERROR:")) || "Drawing the map failed.")}</div><button class="btn" id="mpagain">Draw the map</button>`;
+        const b = $("#mpagain", m); if (b) b.onclick = () => VIEWS.map(m);
+        return;
+      }
+      D_ = await api(`/api/map?a=${encodeURIComponent(cur)}`);
+    }
+  } catch(e){ m.innerHTML = `<h1>Map</h1><div class="note warn">${esc(e.message)}</div>`; return; }
+  if (S.view !== "map" || S.cur !== cur || D_.building) return;   // the page was left while the map was drawn
+  const st = S.mapState = (S.mapState && S.mapState.for === cur) ? S.mapState : {for: cur, r: 0, zoom: null, sel: null, tab: "map"};
+  const A = D_.areas, R = D_.regions, PX = D_.px, sm = D_.summary, C = D_.checks;
+  const nm = r => (A[r] || {}).name || r, q = `a=${encodeURIComponent(cur)}&t=${encodeURIComponent(TOKEN)}`;
+  const cnt = sv => C.filter(c => c.sv === sv && c.c !== "map_does_not_close").length;
+  m.innerHTML = `<h1>Map</h1><p class="sub">Every area drawn from its own minimap images, as the game shows it. Areas that join edge to edge (walk off the east edge of one, arrive at the west edge of the next) are drawn as one map; caves, dungeons and interiors get maps of their own. Every area transition is checked. Click an area for its card.</p>
+    <div class="tiles"><div class="tile"><div class="v">${fmtN(sm.areas)}</div><div class="l">areas</div></div>
+      <div class="tile"><div class="v">${fmtN(sm.maps)}</div><div class="l">joined maps (${fmtN(sm.stitched)} areas)</div></div>
+      <div class="tile"><div class="v">${fmtN(sm.links)}</div><div class="l">transitions (${fmtN(sm.edge)} edge to edge)</div></div>
+      <div class="tile"><div class="v">${sm.tiles ? Math.floor(sm.drawn * 1000 / sm.tiles) / 10 : 100}%</div><div class="l">of tiles drawn${sm.missing_tiles ? ` · <span style="color:var(--critical-text)">${fmtN(sm.missing_tiles)} with no minimap image</span>` : ""}</div></div>
+      <div class="tile click" role="button" tabindex="0" data-mtab="chk"><div class="v"${cnt("error") ? ' style="color:var(--critical-text)"' : ""}>${fmtN(cnt("error"))} / ${fmtN(cnt("warning"))}</div><div class="l">errors / warnings found (Checks tab)</div></div></div>
+    ${sm.base_game ? "" : `<div class="note warn">The base game was not read (set the game folder in Settings and analyse again): tiles from base-game tilesets are drawn grey.</div>`}
+    <div id="mpt"></div><div id="mpb"></div>`;
+  m.querySelectorAll("[data-mtab]").forEach(b => b.onclick = () => { st.tab = b.dataset.mtab; draw(); });
+  const draw = () => {
+    $("#mpt", m).innerHTML = tabs("mtab", st.tab, [["map", "Map"], ["chk", `Checks (${fmtN(C.length)})`]]);
+    m.querySelectorAll("#mpt [data-mtab]").forEach(b => b.onclick = () => { st.tab = b.dataset.mtab; draw(); });
+    st.tab === "map" ? drawMap() : drawChecks();
+  };
+  // ---- Map tab
+  const opt = x => `<option value="${x.i}" ${x.i === st.r ? "selected" : ""}>${esc(Object.keys(x.areas).length > 1 ? `${x.title} - ${Object.keys(x.areas).length} areas` : nm(Object.keys(x.areas)[0]))}</option>`;
+  const multi = R.filter(x => Object.keys(x.areas).length > 1), single = R.filter(x => Object.keys(x.areas).length === 1);
+  const groups = [["Joined maps", multi], ...["Outdoor", "Underground", "Interior"].map(k => [`${k} - single areas`, single.filter(x => x.kind === k).sort((a, b) => nm(Object.keys(a.areas)[0]).localeCompare(nm(Object.keys(b.areas)[0])))])];
+  const drawMap = () => {
+    const x = R[st.r]; if (!x){ st.r = 0; return drawMap(); }
+    const n = Object.keys(x.areas).length, W = x.w * PX, H = x.h * PX;
+    // first view: a joined map fits the stage's width, a single area about 420 px - never smaller than 1/4, never
+    // more than 4 x (pixels stay crisp: image-rendering is pixelated)
+    const room = Math.max(280, (m.clientWidth || 1200) - (m.clientWidth > 900 ? 440 : 40));   // the stage's width, beside the card
+    if (st.zoom == null) st.zoom = Math.max(0.25, Math.min(4, n > 1 ? room / Math.max(W, 1) : Math.min(room, 420) / Math.max(W, H, 1)));
+    if (n === 1) st.sel = Object.keys(x.areas)[0];
+    if (st.sel && !x.areas[st.sel]) st.sel = null;
+    $("#mpb", m).innerHTML = `<div class="mapbar"><select id="mpsel" aria-label="Map">${groups.filter(g => g[1].length).map(([l, g]) => `<optgroup label="${esc(l)}">${g.map(opt).join("")}</optgroup>`).join("")}</select>
+        <input type="search" id="mpq" list="mpal" placeholder="Find an area…" style="min-width:200px"><datalist id="mpal">${Object.keys(A).map(r => `<option value="${esc(nm(r))}">${esc(r)}</option>`).join("")}</datalist>
+        <button class="btn small" id="mpzo" aria-label="Zoom out">−</button><button class="btn small" id="mpzi" aria-label="Zoom in">+</button>
+        <a class="btn small" href="/api/map/export?${q}&r=${x.i}" download>Export map as PNG</a>
+        <span class="small muted mapkey"><i style="background:#3cdc5a"></i>edge transition<i style="background:#e63cc8"></i>door / portal<i style="border:2px dashed var(--critical)"></i>drawn over another area<i style="background:#969696"></i>no minimap image</span></div>
+      <div class="mapgrid"><div class="mapstage"><div class="mapwrap" id="mpw"></div></div><div class="mappanel" id="mpp"></div></div>`;
+    // labels: about 11 px on screen whatever the zoom; only on areas wide enough on screen to hold some text, and cut
+    // to the area's width (about 6.5 px a character)
+    const fit = (t, px) => { const k = Math.max(4, Math.floor((px - 6) / 6.5)); return t.length > k ? t.slice(0, k - 1) + "…" : t; };
+    const ov = new Set(x.overlaps || []), fs = 11 / st.zoom;
+    const rects = Object.entries(x.areas).map(([r, [ax, ay]]) => { const a = A[r], X = ax * PX, Y = H - (ay + a.h) * PX;
+      return `<rect class="ar ${r === st.sel ? "on" : ""} ${ov.has(r) ? "ov" : ""}" data-a="${esc(r)}" x="${X}" y="${Y}" width="${a.w * PX}" height="${a.h * PX}"><title>${esc(a.name)} (${esc(r)})</title></rect>` +
+        (n > 1 && a.w * PX * st.zoom >= 48 ? `<text class="lb" x="${X + 3}" y="${Y + fs + 2}" font-size="${fs}">${esc(fit(a.name, a.w * PX * st.zoom))}</text>` : ""); }).join("");
+    const w_ = $("#mpw", m); w_.style.transform = `scale(${st.zoom})`;
+    w_.style.width = W + "px"; w_.style.height = H + "px";
+    w_.innerHTML = `<img src="/api/map/png?${q}&r=${x.i}" width="${W}" height="${H}" alt="${esc(x.title)}"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${rects}</svg>`;
+    // the scaled picture still takes its unscaled room: size the stage's content to the zoomed size
+    w_.style.marginBottom = `${-(H - H * st.zoom)}px`; w_.style.marginRight = `${-(W - W * st.zoom)}px`;
+    w_.querySelectorAll(".ar").forEach(e => e.onclick = () => { st.sel = e.dataset.a; drawMap(); });
+    $("#mpsel", m).onchange = e => { st.r = +e.target.value; st.zoom = null; st.sel = null; drawMap(); };
+    $("#mpzo", m).onclick = () => { st.zoom = Math.max(0.1, st.zoom / 1.4); drawMap(); };
+    $("#mpzi", m).onclick = () => { st.zoom = Math.min(8, st.zoom * 1.4); drawMap(); };
+    $("#mpq", m).onchange = e => { const v = e.target.value.trim().toLowerCase(); const r = Object.keys(A).find(k => nm(k).toLowerCase() === v || k === v) || Object.keys(A).find(k => nm(k).toLowerCase().includes(v)); if (r) openArea(r); };
+    panel();
+  };
+  const openArea = r => { if (!A[r]) return; if (A[r].region !== st.r){ st.r = A[r].region; st.zoom = null; } st.sel = r; st.tab = "map"; draw(); };
+  const panel = () => {
+    const host = $("#mpp", m), r = st.sel;
+    if (!r){ host.innerHTML = `<div class="card small muted">Click an area on the map for its minimap, its problems and its ways in and out.</div>`; return; }
+    const a = A[r], reg = R[a.region], [ax, ay] = reg.areas[r], H = reg.h * PX;
+    const out = D_.links.filter(l => l.s === r), inn = D_.links.filter(l => l.d === r && l.s !== r), fs = C.filter(c => c.a === r);
+    // the area's own part of the map picture, at most 340 x 340 px and at most 4 x enlarged
+    const sc = Math.min(340 / (a.w * PX), 340 / (a.h * PX), 4), cw = Math.round(a.w * PX * sc), miss = Object.entries(a.missing || {});
+    host.innerHTML = `<div class="card"><h3 style="margin:0">${nl("area:" + r, a.name)}</h3>
+      <div class="small muted">${esc(r)} · ${a.w} × ${a.h} tiles · tileset <span class="mono">${esc(a.ts)}</span> · ${a.flags & 1 ? "interior" : "exterior"}, ${a.flags & 2 ? "underground" : "above ground"}${r === D_.entry ? " · <b>the module's start area</b>" : ""}</div>
+      <div class="mapcrop" style="width:${cw}px;height:${Math.round(a.h * PX * sc)}px"><img src="/api/map/png?${q}&r=${a.region}" style="transform:scale(${sc}) translate(${-ax * PX}px,${-(H - (ay + a.h) * PX)}px)" alt=""></div>
+      <a class="btn small" href="/api/map/export?${q}&area=${encodeURIComponent(r)}" download>Export area as PNG</a> <span class="small">${nl("area:" + r, "All area details")}</span>
+      ${miss.length ? `<div class="note warn small">${fmtN(a.tiles - a.drawn)} of ${fmtN(a.tiles)} tiles have no minimap image (grey here, blank in game): ${miss.map(([k, v]) => `<span class="mono">${esc(k)}</span> (${v})`).join(", ")}</div>` : a.no_set ? `<div class="note warn small">The tileset file was not found: the area is drawn grey.</div>` : ""}
+      ${fs.length ? `<h4>Problems (${fs.length})</h4>` + fs.map(f => `<div class="maptr small">${svBadge(f.sv)} <b>${esc(MAPCHECK[f.c] || f.c)}</b> · ${esc(f.o)}: ${esc(f.d)}<div class="fixhint"><b>How to fix:</b> ${esc(f.fx)}</div></div>`).join("") : ""}
+      <h4>Ways out (${out.length})</h4>${out.map(l => `<div class="maptr small">${esc(l.ok.toLowerCase())} <b>${esc(l.o)}</b>${l.side ? ` <span class="muted">(${esc(l.side)} edge)</span>` : ""} → <a href="#" data-go="${esc(l.d)}">${esc(nm(l.d))}</a> <span class="muted">at ${esc(l.to)}${l.k === "edge" ? " · edge to edge" : ""}</span></div>`).join("") || `<div class="small muted">None.</div>`}
+      <h4>Ways in (${inn.length})</h4>${inn.map(l => `<div class="maptr small">from <a href="#" data-go="${esc(l.s)}">${esc(nm(l.s))}</a> <span class="muted">(${esc(l.o)} → ${esc(l.to)})</span></div>`).join("") || `<div class="small muted">None - nothing leads here.</div>`}</div>`;
+    host.querySelectorAll("[data-go]").forEach(e => e.onclick = ev => { ev.preventDefault(); openArea(e.dataset.go); });
+  };
+  // ---- Checks tab
+  const drawChecks = () => {
+    $("#mpb", m).innerHTML = `<p class="small muted">Every transition and minimap finding, with how to fix it. The same findings are on the Issues page (where you can accept one as by design), except <i>areas overlap on the map</i> and <i>minimap image in a format the page can't read</i>, which only concern how the map is drawn.</p><div class="filters" id="mcf"></div><div id="mct"></div>`;
+    const ord = {error: 0, warning: 1, info: 2}, worst = rs => Math.min(...rs.map(c => ord[c.sv]));
+    const rows = C.map(c => ({...c, check: MAPCHECK[c.c] || c.c, area: nm(c.a)})).sort((a, b) => ord[a.sv] - ord[b.sv] || a.check.localeCompare(b.check));
+    const t = new GroupedTable($("#mct", m), {rows, onRow: c => openArea(c.a),
+      // groups with errors first, then warnings, then notes (then by size)
+      groupings: {"check": c => c.check, "severity": c => c.sv, "area": c => c.area},
+      order: {"check": (a, b, ra, rb) => worst(ra) - worst(rb), "severity": (a, b) => ord[a] - ord[b], "area": (a, b, ra, rb) => worst(ra) - worst(rb)},
+      badge: rs => { const e = rs.filter(c => c.sv === "error").length; return e ? `<span class="badge sv-error"><i></i>${e} error(s)</span>` : ""; },
+      columns: [{key: "sv", label: "Severity", render: c => svBadge(c.sv), sort: c => ord[c.sv]},
+        {key: "check", label: "Check"}, {key: "area", label: "Area"}, {key: "o", label: "Object", render: c => `<span class="small mono">${esc(c.o)}</span>`},
+        {key: "d", label: "What", render: c => `<span class="small">${esc(c.d)}</span><div class="small fixhint"><b>How to fix:</b> ${esc(c.fx)}</div>`}]});
+    filterBar($("#mcf", m), [{id: "q", type: "search", label: "Search areas, objects, tags…"},
+      {id: "sv", type: "select", label: "All severities", options: ["error", "warning", "info"]}],
+      f => t.set(rows.filter(c => (!f.sv || c.sv === f.sv) && has(f.q, c.area, c.a, c.o, c.d, c.check))));
+  };
+  if (!R.length){ $("#mpb", m).innerHTML = `<p class="muted">This module has no areas to draw.</p>`; return; }
+  draw();
+};
+
 VIEWS.catalog = async (m) => {
   let c; try { c = STATIC ? STATIC.catalog : await api(`/api/catalog?a=${encodeURIComponent(S.cur)}`); }
   catch(e){ m.innerHTML = `<h1>Hak catalogue</h1><div class="note warn">${esc(e.message)}</div>`; return; }
@@ -3503,6 +3657,7 @@ async function openNode(node){
   if (!await leaveDrawer()) return;
   const dr = $("#drawer"); dr.hidden = false;
   $("#drawerHead").innerHTML = `<b>${esc(label(node))}</b>`; $("#drawerBody").innerHTML = `<p class="muted">Loading…</p>`;
+  $("#drawerBody").scrollTop = 0;        // a newly opened thing starts at its top, not where the last one was scrolled
   let d; try { d = STATIC ? staticNode(node) : await api(`/api/node?a=${encodeURIComponent(S.cur)}&node=${encodeURIComponent(node)}`); }
   catch(e){ $("#drawerBody").innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
   const r = S.rep, im = d.impact || {level: "None", reasons: [], counts: {}, affected: []};
@@ -3532,6 +3687,7 @@ async function openNode(node){
     H += (S.dupOf[node]).map(g => `<div class="note warn small">Duplicate group #${g.id}: ${esc(g.category)} — ${g.members.filter(x => x.node!==node).map(x => nl(x.node, x.label)).join(", ")}</div>`).join("");
   }
   if (d.object) H += `<h3>Placed object</h3><div class="small">${esc(d.object.class)} · tag <span class="mono">${esc(d.object.tag)}</span> · from blueprint ${d.object.template?nl(`bp:${d.object.template}.${({creature:"utc",door:"utd",placeable:"utp",item:"uti",store:"utm",sound:"uts",trigger:"utt",waypoint:"utw",encounter:"ute"})[d.object.class]}`, d.object.template):"-"}${d.object.x!=null?` · position (${[d.object.x,d.object.y,d.object.z].map(v => (+v).toFixed(1)).join(", ")})`:""}</div>`;
+  H += objectDetails(d.details);
   H += `<h3>Impact if changed: ${lvBadge(im.level)}</h3><ul class="small">${(im.reasons||[]).map(x => `<li>${esc(reasonText(x))}</li>`).join("")}</ul>`;
   if ((im.affected||[]).length){
     H += `<details ${im.affected.length<=25?"open":""}><summary class="small"><b>${im.affected.length}</b> affected - with the chain that connects them</summary>${im.affected.map(a =>
@@ -3568,6 +3724,32 @@ async function openNode(node){
     try { await post("/api/description", {a: S.cur, script: node.slice(7), text}); }
     catch(e){ errorBox("Description not saved: " + e.message); return; }
     script.description = text || null; dt.orig = dt.value; openNode(node); };
+}
+
+// The side panel's "Scripts", "Variables" and "Properties" for an area, blueprint, placed object or the module
+// (/api/node -> details, from nwn_analysis.object_details): every event slot with its script (flagged when no copy
+// was found), the object's own Variables (each links to who reads or sets it), and every other setting by group.
+function objectDetails(det){
+  if (!det) return "";
+  const sw = v => /^#[0-9A-F]{6}$/.test(v) ? `<span class="swatch" style="background:${v}"></span>` : "";
+  let H = `<h3>Scripts (${det.scripts.length})</h3>` + (det.scripts.length ? `<table class="dt small"><thead><tr><th>Event</th><th>Script</th></tr></thead><tbody>${det.scripts.map(x =>
+    `<tr><td>${esc(x.event)}${x.event !== x.field ? ` <span class="muted mono">${esc(x.field)}</span>` : ""}</td><td>${nl("script:" + x.script.toLowerCase(), x.script)}${x.found ? "" : ` <span class="chip">not found</span>`}</td></tr>`).join("")}</tbody></table>` : `<p class="small muted">No event scripts set.</p>`);
+  H += `<h3>Variables (${det.variables.length})</h3>` + (det.variables.length ? `<table class="dt small"><thead><tr><th>Name</th><th>Type</th><th>Value</th></tr></thead><tbody>${det.variables.map(v =>
+    `<tr><td>${nl("var:" + v.name, v.name)}</td><td>${esc(v.type)}</td><td class="mono">${esc(v.value)}</td></tr>`).join("")}</tbody></table>` : `<p class="small muted">No variables set in the toolset.</p>`);
+  const it = det.item_scripts;
+  if (it){
+    // where this item's scripts live: the tag-based script(s) the game runs for it, the module events that run
+    // them, and every script or conversation that names the item's tag
+    H += `<h3>Item scripts${it.tag ? ` (tag <span class="mono">${esc(it.tag)}</span>)` : ""}</h3>`;
+    H += it.tag_based.length ? it.tag_based.map(x => `<div class="small">${nl("script:" + x.script.toLowerCase(), x.script)}${x.found ? "" : ` <span class="chip">not found</span>`} <span class="muted">- ${esc(x.how)}${x.events.length ? "; handles: " + x.events.map(esc).join(", ") : "; runs for every item event (it doesn't check which)"}</span></div>`).join("")
+      : `<p class="small muted">No tag-based script: no script is named after this item's tag${it.tag ? ` (${esc(it.tag)}.nss)` : ""}.</p>`;
+    if (it.tag_based.length && it.module_events.length) H += `<div class="small muted" style="margin-top:4px">Run from the module's item events: ${it.module_events.map(e => `${esc(e.event)} ${nl("script:" + e.script, e.script)}`).join(" · ")}</div>`;
+    if (it.lookups.length) H += `<details class="small" ${it.lookups.length <= 8 ? "open" : ""}><summary><b>${it.lookups.length}</b> script(s)/conversation(s) name this tag</summary>${it.lookups.map(l => `<div>${nl(l.node, l.label)} <span class="muted">${esc(l.via)}</span></div>`).join("")}</details>`;
+  }
+  const groups = [...new Set(det.props.map(p => p[0]))];
+  if (groups.length) H += `<h3>Properties</h3>` + groups.map((g, i) => `<details class="small" ${i === 0 ? "open" : ""}><summary><b>${esc(g)}</b> (${det.props.filter(p => p[0] === g).length})</summary><table class="dt small"><tbody>${det.props.filter(p => p[0] === g).map(p =>
+    `<tr><td>${esc(p[1])}</td><td>${sw(p[2])}${p[2] === "" ? `<span class="muted">(empty)</span>` : esc(p[2]).replace(/\r?\n/g, "<br>")}</td></tr>`).join("")}</tbody></table></details>`).join("");
+  return H;
 }
 
 // Wire up the side panel's editors. Every save goes to /api/edit/save (the analysis' edits, never the original

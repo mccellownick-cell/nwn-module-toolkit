@@ -1,4 +1,4 @@
-# NWN Module Toolkit 1.5.2
+# NWN Module Toolkit 1.5.3
 
 Analyse, understand and clean up Neverwinter Nights: Enhanced Edition modules - safely.
 
@@ -64,6 +64,9 @@ last line must say that all suites passed. Each suite can also be run on its own
 
 ## Credits
 Created by **Sporaxis** - contact: sporaxis@gmail.com.
+
+Contributors: **Sporaxis** (author) and **Anthropic: Claude** (code).
+
 The code was developed within Claude, Anthropic's AI assistant. The toolkit itself uses no AI: it runs entirely on
 your computer and makes no internet connections.
 

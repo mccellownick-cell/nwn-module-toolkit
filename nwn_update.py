@@ -90,6 +90,13 @@ REANALYSE = [
     dict(key="noise_rules", since="1.5.2", value=2,
          what="Fewer false alarms: item scripts counted as used, problems in unused content and hak layering as notes, "
               "a CreateObject's new tag no longer read as a blueprint, harmless missing scripts as notes"),
+    # area_details 1: every area property, the area's own Variables and a settings summary (Areas page, areas.csv)
+    dict(key="area_details", since="1.5.3",
+         what="Every area setting and the area's own variables on the Areas page and in reports/areas.csv"),
+    # map_checks 1: area transitions, minimap images that don't exist and areas set to Underground by mistake, on the
+    # Issues page (nwn_minimap.map_checks); the Map page itself draws from the index and needs no re-analysis
+    dict(key="map_checks", since="1.5.3",
+         what="Area transition checks, missing minimap images and areas set to Underground by mistake on the Issues page"),
 ]
 
 # --- (a) bringing work across -------------------------------------------------------------------------------
