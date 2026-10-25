@@ -936,7 +936,7 @@ function renderAnalysesList(list){
   if (!list.length) return;
   new Table(al, {rows: list, onRow: a => !a.incomplete && !a.archived && load(a.name), columns: [
     {key:"module_name", label:"Module", render: a => `<b>${esc(a.module_name||a.name)}</b>`},
-    {key:"module_path", label:"Source", render: a => `<span class="mono small">${esc(a.module_source||a.module_path||"")}</span>${a.module_source?' <span class="small muted">(nasher)</span>':""}`},
+    {key:"module_path", label:"Source", render: a => `<span class="mono small">${esc(a.module_source||a.module_path||"")}</span>${a.module_source?' <span class="small muted">(nasher)</span>':""}${a.module_missing?' <span class="badge sv-warning" title="This file is no longer at this path - it was renamed, moved or archived after the analysis. The analysis still opens; to analyse the file under its new name, add it as a module."><i></i>file not found</span>':""}`},
     {key:"indexed_at", label:"Analysed", render: a => esc(a.incomplete ? (a.indexed_at ? "started " + a.indexed_at : "") : a.indexed_at)},
     {key:"status", label:"Status", sort: a => a.incomplete ? (a.running ? 1 : 2) : a.archived ? 3 : 0, render: a => a.running ? stBadge("running") :
       a.incomplete ? `${stBadge("incomplete")} <button class="btn small" data-clear="${esc(a.name)}">Clear</button>` :
@@ -2733,22 +2733,25 @@ VIEWS.compare = async (m) => {
   m.innerHTML = `<p class="muted">Loading…</p>`;
   const st = await api("/api/diff/state");
   const cur = (st.analyses.find(a => a.name === S.cur) || {});
-  S.cmp = S.cmp || {older: "", newer: cur.module_path || "", analysis: S.cur || ""};
+  // a remembered or analysed path whose file has since been renamed/moved is not offered (st.analyses[].exists)
+  S.cmp = S.cmp || {older: "", newer: cur.exists ? cur.module_path : "", analysis: S.cur || ""};
   m.innerHTML = `<h1>Compare modules</h1><p class="sub">What changed between two copies of a module - added, removed and changed files, and for each change the fields or script lines that differ. With an analysis, every change shows its impact level, and a removed file shows how many things used it.</p>
-    <div class="card"><datalist id="cmpList">${st.snapshots.map(x => `<option value="${esc(x.path)}">snapshot ${esc(x.module)} ${esc(x.taken)}</option>`).join("")}${st.analyses.filter(a => a.module_path).map(a => `<option value="${esc(a.module_path)}">analysed: ${esc(a.name)}</option>`).join("")}</datalist>
+    <div class="card"><datalist id="cmpList">${st.snapshots.map(x => `<option value="${esc(x.path)}">snapshot ${esc(x.module)} ${esc(x.taken)}</option>`).join("")}${st.analyses.filter(a => a.exists).map(a => `<option value="${esc(a.module_path)}">analysed: ${esc(a.name)}</option>`).join("")}${st.files.filter(f => !st.analyses.some(a => a.exists && a.module_path === f.path)).map(f => `<option value="${esc(f.path)}">${esc(f.modified)} · ${fmtBytes(f.bytes)}</option>`).join("")}</datalist>
+      ${st.analyses.some(a => a.module_path && !a.exists) ? `<p class="small muted" style="margin-top:0">Not offered - the file analysed is no longer there (renamed, moved or archived): ${st.analyses.filter(a => a.module_path && !a.exists).map(a => `<span class="mono">${esc(a.module_path)}</span>`).join(", ")}.</p>` : ""}
       <label class="small">Older copy (.mod, module folder or a snapshot)<br><input type="text" class="wide" id="cmpA" list="cmpList" value="${esc(S.cmp.older)}"></label>
       <label class="small" style="display:block;margin-top:8px">Newer copy<br><input type="text" class="wide" id="cmpB" list="cmpList" value="${esc(S.cmp.newer)}"></label>
       <div class="row small" style="margin-top:8px">Impact from the analysis <select class="f" id="cmpAn"><option value="">(none)</option>${st.analyses.map(a => `<option ${a.name===S.cmp.analysis?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="cmpGo">Compare</button><button class="btn" id="cmpSnap" title="Keep a small record of the newer copy (hashes + script text) so you can compare against it after the .mod is gone">Take a snapshot of the newer copy</button><span class="small muted" id="cmpMsg"></span></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="cmpGo">Compare</button><button class="btn" id="cmpSnap" title="Keep a small record of the newer copy (hashes + script text) so you can compare against it after the .mod is gone">Take a snapshot of the newer copy</button><span class="small muted" id="cmpMsg"></span></div><div id="cmpErr"></div>
       ${st.snapshots.length ? `<details class="small" style="margin-top:8px"><summary>${st.snapshots.length} snapshot(s)</summary>${st.snapshots.map(x => `<div class="mono">${esc(x.name)} · ${fmtBytes(x.bytes)}</div>`).join("")}</details>` : ""}</div>
     <div id="cmpRes"></div>`;
-  const run = async (url, body, label) => { const msg = $("#cmpMsg", m);
+  // a refusal (file not found...) shows as a warning box under the buttons, not as faint text beside them
+  const run = async (url, body, label) => { const msg = $("#cmpMsg", m), err = $("#cmpErr", m); err.innerHTML = "";
     try { const r = await post(url, body); const d = await waitJob(r.job, x => msg.textContent = `${label}: ${x.pct != null ? Math.floor(x.pct) + "% " : ""}${x.msg || ""}`);
       if (d.status !== "done") throw new Error(d.lines.slice(-1)[0] || d.status); msg.textContent = ""; return d.result; }
-    catch(e){ msg.textContent = e.message; return null; } };
+    catch(e){ msg.textContent = ""; err.innerHTML = `<div class="note warn small">${esc(e.message)}</div>`; return null; } };
   $("#cmpGo", m).onclick = async () => { S.cmp = {older: $("#cmpA", m).value.trim(), newer: $("#cmpB", m).value.trim(), analysis: $("#cmpAn", m).value};
     $("#cmpRes", m).innerHTML = "";
-    if (!S.cmp.older || !S.cmp.newer){ $("#cmpMsg", m).textContent = "Fill in both copies first (pick from the list or paste a path)."; return; }
+    if (!S.cmp.older || !S.cmp.newer){ $("#cmpErr", m).innerHTML = `<div class="note warn small">Fill in both copies first (pick from the list or paste a path).</div>`; return; }
     $("#cmpMsg", m).textContent = "Starting…";
     if (await run("/api/diff/compare", S.cmp, "Comparing")) showCmp(); };
   $("#cmpSnap", m).onclick = async () => { const lab = await dialog({title: "Take a snapshot", ok: "Take snapshot", input: {placeholder: "label (optional), e.g. before the cleanup"},
@@ -3018,25 +3021,30 @@ function palRows(pal, ext, hidden, moves = {}, fchanges = {}){
     out.push({ext, type: t.label, node: b.node, resref: b.resref, name: b.name, tag: b.tag, src: src[b.src], pid: b.pid,
               cat: b.cat, path: where(b.cat), cr: b.cr ?? null, note: b.stale || "", hiddenBy: null, hides: (b.hidden || []).length,
               movable: src[b.src] === "module", moveTo: mv ? mv.to : null, movePath: mv ? (pathOfId.get(mv.to) || "#" + mv.to) : null,
-              base: b.base ?? null, fchg: (fchanges[ext] || {})[b.resref] || null});
+              base: b.base ?? null, flags: b.flags || [], fchg: (fchanges[ext] || {})[b.resref] || null});
     if (hidden) (b.hidden || []).forEach(x => out.push({ext, type: t.label, node: b.node, resref: b.resref, name: x.name, tag: x.tag,
       src: src[x.src], pid: x.pid, cat: x.cat, path: where(x.cat), cr: null, note: "", hiddenBy: src[b.src], hides: 0,
-      movable: false, moveTo: null, movePath: null}));
+      movable: false, moveTo: null, movePath: null, flags: x.flags || []}));
   });
   return out;
 }
 // Same-name group key: the name ignoring case and extra spaces; a blueprint without a name is grouped by its resref.
 const sameNameKey = r => { const k = String(r.name || "").trim().replace(/\s+/g, " ").toLowerCase(); return k ? "name:" + k : "resref:" + r.resref; };
 // The rows the Blueprints filters keep. f: {q (lower-cased search), cat (category index, "" = any; its sub-categories
-// count too), src (source name), base (base item number), none / stale / waiting (tick boxes)}; cats: the type's
-// categories (each knows its parent).
+// count too), src (source name), base (base item number), flag (items: "stolen" / "plot" / "undroppable", "any" = at
+// least one, "none" = no flag), none / stale / waiting (tick boxes)}; cats: the type's categories (each knows its parent).
+const flagOk = (flags, want) => !want || (want === "any" ? flags.length > 0 : want === "none" ? !flags.length : flags.includes(want));
 function bpFilter(rows, f, cats){
   const want = f.cat === "" || f.cat == null ? null : +f.cat;
   const under = c => { for (let i = c; i != null; i = cats[i].parent) if (i === want) return true; return false; };
   return rows.filter(r => has(f.q, r.name, r.tag, r.resref) && (want == null || (r.cat != null && under(r.cat))) &&
     (!f.src || r.src === f.src) && (f.base == null || f.base === "" || String(r.base) === String(f.base)) &&
-    (!f.none || r.cat == null) && (!f.stale || !!r.note) && (!f.waiting || r.moveTo != null));
+    (!f.none || r.cat == null) && (!f.stale || !!r.note) && (!f.waiting || r.moveTo != null) && flagOk(r.flags || [], f.flag));
 }
+// Item flags as chips: Stolen, Plot, Undroppable (the item's Cursed field: it can't be dropped)
+const FLAG_LABEL = {stolen: "Stolen", plot: "Plot", undroppable: "Undroppable"};
+const FLAG_OPTS = [["any", "Any flag set"], ["stolen", "Stolen"], ["plot", "Plot"], ["undroppable", "Undroppable"], ["none", "No flag set"]];
+const flagChips = fl => (fl || []).map(f => `<span class="chip" title="${f === "undroppable" ? "Cursed: a player can't drop it" : FLAG_LABEL[f]}">${FLAG_LABEL[f]}</span>`).join(" ");
 // Tick every row that can move (sel: the Set of "ext:resref"). Hidden copies are left out quietly; blueprints whose
 // copy in a hak wins are counted as skipped. Returns {added, skipped}.
 function bpSelect(sel, rows){
@@ -3046,9 +3054,10 @@ function bpSelect(sel, rows){
   return {added, skipped};
 }
 // Fields Change fields… offers per blueprint type (nwn_bpchanges.FIELDS) and how a value reads (a faction by name).
-const BP_FIELDS = {uti: ["name", "tag", "description", "unidentified_description"], utc: ["first_name", "last_name", "tag", "description", "faction"],
+const BP_FIELDS = {uti: ["name", "tag", "description", "unidentified_description", "stolen", "plot", "undroppable"], utc: ["first_name", "last_name", "tag", "description", "faction"],
   utp: ["name", "tag", "description"], utd: ["name", "tag", "description"], utm: ["name", "tag"], uts: ["name", "tag"],
   utt: ["name", "tag"], ute: ["name", "tag"], utw: ["name", "tag", "description"]};
+const BP_FLAG_FIELDS = ["stolen", "plot", "undroppable"];
 const fieldText = (f, v) => { if (f !== "faction") return String(v ?? ""); const fa = (((S.rep || {}).factions || {}).factions || []).find(x => String(x.id) === String(v)); return fa ? `${fa.name} (#${v})` : `#${v}`; };
 // A CSV cell: quoted when needed, and a leading = + - @ (or tab / CR) defused with ' so a spreadsheet never runs a
 // blueprint name as a formula (names come from haks anyone can make).
@@ -3081,13 +3090,14 @@ VIEWS.blueprints = async (m) => {
     <div id="bpmv"></div><div id="bpv"></div><div id="bpt"></div><div class="filters" id="bpf"></div><div id="bpn"></div><div id="bpb"></div>`;
   const draw = () => {
     if (st.view === "tree" && st.ext === "all") st.ext = "uti";
-    $("#bpv", m).innerHTML = tabs("bpview", st.view, [["tree", "Palette tree"], ["same", "Same name"]]);
+    $("#bpv", m).innerHTML = tabs("bpview", st.view, [["tree", "Palette tree"], ["same", "Same name"], ...(STATIC ? [] : [["flags", "Placed item flags"]])]);
     $("#bpt", m).innerHTML = tabs("bpext", st.ext, [...BP_TYPES.map(e => [e, `${pal.types[e].label} (${fmtN(pal.types[e].blueprints.length)})`]),
       st.view === "same" && ["all", "All types"]]);
     // a new tab keeps the search text but not the category / base item filters (those differ per palette)
     const keepQ = () => { st.f = {q: (st.f || {}).q, once: (st.f || {}).once}; };
     m.querySelectorAll("[data-bpview]").forEach(b => b.onclick = () => { st.view = b.dataset.bpview; keepQ(); draw(); });
     m.querySelectorAll("[data-bpext]").forEach(b => b.onclick = () => { st.ext = b.dataset.bpext; keepQ(); draw(); });
+    if (st.view === "flags"){ $("#bpt", m).innerHTML = ""; $("#bpn", m).innerHTML = ""; drawMoves(); drawFlags(); return; }
     const exts = st.ext === "all" ? BP_TYPES : [st.ext];
     let rows = exts.flatMap(e => palRows(pal, e, st.view === "same", moves, fchanges));
     drawMoves();
@@ -3101,6 +3111,7 @@ VIEWS.blueprints = async (m) => {
     if (srcs.length > 1) opts.push({id: "src", type: "select", label: "Any source", options: srcs});
     if (st.ext === "uti" && t.base_names) opts.push({id: "base", type: "select", label: "Any base item",
       options: Object.entries(t.base_names).sort((a, b) => a[1].localeCompare(b[1])).map(([k, v]) => [k, v])});
+    if (st.ext === "uti") opts.push({id: "flag", type: "select", label: "Any item flags", options: FLAG_OPTS});
     opts.push({id: "none", type: "check", label: "In no category"}, {id: "stale", type: "check", label: "Palette file out of date"});
     if (!STATIC) opts.push({id: "waiting", type: "check", label: "Waiting move"});
     if (st.view === "same") opts.push({id: "once", type: "check", label: "Only names used more than once"});
@@ -3138,10 +3149,11 @@ VIEWS.blueprints = async (m) => {
     }
     $("#bpcsv", m).onclick = () => { const vis = filtered();
       downloadCsv(`blueprints_${st.ext}${st.view === "same" ? "_same_name" : ""}.csv`,
-        [...(st.view === "same" ? ["group"] : []), "type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "note", "waiting_move", "move_to",
-         "new_name", "new_first_name", "new_last_name", "new_tag", "new_description", "new_unidentified_description", "new_faction"],
+        [...(st.view === "same" ? ["group"] : []), "type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "stolen", "plot", "undroppable", "note", "waiting_move", "move_to",
+         "new_name", "new_first_name", "new_last_name", "new_tag", "new_description", "new_unidentified_description", "new_faction", "new_stolen", "new_plot", "new_undroppable", "all_copies"],
         vis.map(r => [...(st.view === "same" ? [r.group] : []), r.type, palWhere(r), r.name, r.tag, r.resref, r.src, r.pid ?? "", r.cr ?? "",
-          r.hiddenBy ? `hidden by ${r.hiddenBy} (the game uses that copy)` : r.note, r.moveTo != null ? r.movePath : "", "", "", "", "", "", "", "", ""])); };
+          ...BP_FLAG_FIELDS.map(f => (r.flags || []).includes(f) ? "yes" : ""),
+          r.hiddenBy ? `hidden by ${r.hiddenBy} (the game uses that copy)` : r.note, r.moveTo != null ? r.movePath : "", "", "", "", "", "", "", "", "", "", "", "", ""])); };
     // columns shared by both views; Type only in All types, CR only for creatures, Palette when rows are not under a category heading
     const cols = (withPath, withDup) => [
       ...(STATIC ? [] : [{key: "sel", label: "", sort: r => S.bpSel.has(r.ext + ":" + r.resref), render: r => r.hiddenBy ? "" : r.movable
@@ -3155,6 +3167,7 @@ VIEWS.blueprints = async (m) => {
       {key: "src", label: "Source", render: r => esc(r.src) + (r.hides ? ` <span class="small muted" title="Copies in other places that load order hides">(+${r.hides} hidden)</span>` : "")},
       ...(withPath ? [{key: "path", label: "Palette", render: r => r.path == null ? `<span class="muted">${esc(palWhere(r))}</span>` : esc(r.path), sort: r => r.path ?? "~"}] : []),
       ...(st.ext === "utc" || st.ext === "all" ? [{key: "cr", label: "CR", num: true, render: r => r.cr ?? ""}] : []),
+      ...(st.ext === "uti" || st.ext === "all" ? [{key: "flags", label: "Flags", render: r => flagChips(r.flags), sort: r => (r.flags || []).join(",")}] : []),
       ...(withDup ? [{key: "dup", label: "Duplicates", render: r => (S.dupOf && S.dupOf[r.node] || []).map(g => `<a href="#" class="chip" data-go="duplicates" title="Same content: duplicate group #${g.id} (${esc(g.category)}) - open the Duplicates page">#${g.id}</a>`).join(" ")}] : []),
       {key: "note", label: "Note", render: r => (r.moveTo != null ? `<span class="small"><b>→ ${esc(r.movePath)}</b> (next build) <a href="#" data-undo="${esc(r.ext + ":" + r.resref)}">undo</a></span> ` : "") +
         (r.fchg && !r.hiddenBy ? `<span class="small">${Object.entries(r.fchg).map(([f, v]) => `<b>${esc(f.replace(/_/g, " "))} → ${esc(fieldText(f, v.to))}</b>`).join(", ")} (next build) <a href="#" data-fundo="${esc(r.ext + ":" + r.resref)}">undo</a></span> ` : "") +
@@ -3166,7 +3179,7 @@ VIEWS.blueprints = async (m) => {
     const onRow = r => openNode(r.node);
     function drawTree(f){
       const host = $("#bpb", m);
-      if (f.q || f.cat || f.src || f.base || f.none || f.stale || f.waiting){   // a search or filter: one flat list with paths
+      if (f.q || f.cat || f.src || f.base || f.flag || f.none || f.stale || f.waiting){   // a search or filter: one flat list with paths
         const vis = bpFilter(rows, f, t.categories);
         host.innerHTML = `<div id="bpflat"></div>`; new Table($("#bpflat", host), {rows: vis, columns: cols(true, false), onRow, after, empty: "No blueprint matches."}); return;
       }
@@ -3207,6 +3220,56 @@ VIEWS.blueprints = async (m) => {
     function list(){ (st.view === "same" ? drawSame : drawTree)(get()); selCount(); }
     list();
   };
+  // Placed item flags: items placed in areas (inventories, equipment, containers, stores, the ground) that have Stolen,
+  // Plot or Undroppable set, or whose flags differ from their blueprint's (/api/itemflags, nwn_itemflags). A placed item
+  // is a full copy that keeps its own flags, so changing a blueprint only reaches copies still holding its old value -
+  // unless Change fields… is saved with "all placed copies".
+  let flagsLoad = 0;                                       // a newer drawFlags() makes an older one's result stale
+  async function drawFlags(){
+    const host = $("#bpb", m), fb = $("#bpf", m), mine = ++flagsLoad;
+    fb.innerHTML = ""; host.innerHTML = `<p class="muted">Reading the items placed in areas…</p>`;
+    let d; try { d = await api(`/api/itemflags?a=${encodeURIComponent(S.cur)}`); }
+    catch(e){ if (mine === flagsLoad) host.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; return; }
+    if (st.view !== "flags" || mine !== flagsLoad) return;   // the user moved on, or clicked again, while it loaded
+    const sm = d.summary, rows = d.copies;
+    $("#bpt", m).innerHTML = `<div class="tiles"><div class="tile"><div class="v">${fmtN(sm.placed)}</div><div class="l">items placed in areas</div></div>
+      <div class="tile"><div class="v">${fmtN(sm.stolen)}</div><div class="l">Stolen</div></div><div class="tile"><div class="v">${fmtN(sm.plot)}</div><div class="l">Plot</div></div>
+      <div class="tile"><div class="v">${fmtN(sm.undroppable)}</div><div class="l">Undroppable</div></div><div class="tile"><div class="v">${fmtN(sm.differs)}</div><div class="l">differ from their blueprint</div></div></div>
+      <p class="small">Items placed in an area - in a creature's inventory or equipment, a container, a store or on the ground - with a flag set, or whose flags differ from their blueprint's. Each is a copy that keeps its own flags: <b>Change fields…</b> on a blueprint reaches the copies still holding its old value, and with <b>all placed copies</b> ticked, every copy. Undroppable is the item's Cursed flag. Items the game creates from a blueprint (store and creature blueprints that list them by name, scripts) use the blueprint's flags and are not listed. For the blueprints themselves, use the Items tab's <b>Any item flags</b> filter.</p>
+      ${sm.in_hak ? `<div class="note warn small">${fmtN(sm.in_hak)} of these sit in areas whose copy in a hak is the one the game uses (marked <b>hak</b>): a build changes module files only, so change those in the hak.</div>` : ""}`;
+    const opts = [{id: "q", type: "search", label: "Search name, tag, resref, area or who holds it…"}, {id: "flag", type: "select", label: "Any item flags", options: FLAG_OPTS},
+      {id: "differs", type: "check", label: "Differs from its blueprint"}];
+    let t = null;
+    const get = filterBar(fb, opts, () => list());
+    fb.insertAdjacentHTML("beforeend", `<button class="btn" id="ifcsv">Export CSV</button> <button class="btn" id="ifchg" title="Tick the module blueprints of the copies shown and open Change fields…">Change their blueprints…</button> <span id="ifsn" class="small muted"></span>`);
+    function filtered(){ const f = get(); return rows.filter(c => has(f.q, c.name, c.tag, c.resref, c.area, c.area_name, c.held_by) && flagOk(c.flags, f.flag) && (!f.differs || c.differs)); }
+    const bpText = c => c.bp_flags == null ? "no blueprint" : (c.bp_flags.length ? c.bp_flags.map(f => FLAG_LABEL[f]).join(" + ") : "none") + (c.bp_source === "base game" ? " (base game)" : "");
+    function list(){ const vis = filtered();
+      if (t){ t.set(vis); return; }
+      t = new Table(host, {rows: vis, onRow: c => openNode(c.node), empty: "No placed item matches.", columns: [
+        {key: "name", label: "Item", render: c => nl(c.node, c.name || c.resref) + ` <span class="mono small muted">${esc(c.resref)}</span>`},
+        {key: "flags", label: "Flags", render: c => flagChips(c.flags) || '<span class="muted small">none</span>', sort: c => c.flags.join(",")},
+        {key: "bp", label: "Blueprint's flags", render: c => `<span class="small${c.differs ? "" : " muted"}">${esc(bpText(c))}</span>`, sort: bpText},
+        {key: "differs", label: "Differs", render: c => c.differs ? `<span class="badge sv-warning"><i></i>differs</span>` : "", sort: c => c.differs ? 0 : 1},
+        {key: "area", label: "Area", render: c => `${esc(c.area_name || c.area)} <span class="mono small muted">${esc(c.area)}</span>` + (c.area_src && c.area_src !== "module" ? ` <span class="chip" title="The game uses this area's copy in ${esc(c.area_src)}: a build can't change it - change it in the hak">hak ${esc(c.area_src)}</span>` : ""), sort: c => c.area_name || c.area},
+        {key: "held_by", label: "Held by", render: c => c.held_by_node ? nl(c.held_by_node, c.held_by) : `<span class="muted">${esc(c.held_by)}</span>`},
+        {key: "where", label: "Where in the area file", render: c => `<span class="mono small">${esc(c.where)}</span>`}]}); }
+    $("#ifcsv", m).onclick = () => downloadCsv("placed_item_flags.csv",
+      ["name", "resref", "tag", "area", "area_resref", "area_from", "held_by", "where", "stolen", "plot", "undroppable", "blueprint_flags", "differs_from_blueprint"],
+      filtered().map(c => [c.name, c.resref, c.tag, c.area_name, c.area, c.area_src, c.held_by, c.where, ...BP_FLAG_FIELDS.map(f => c.flags.includes(f) ? "yes" : ""), bpText(c), c.differs ? "yes" : ""]));
+    $("#ifchg", m).onclick = async () => {
+      const own = new Set(pal.types.uti.blueprints.filter(b => pal.sources[b.src] === "module").map(b => b.resref));
+      const want = [...new Set(filtered().map(c => c.resref))], ok = want.filter(r => own.has(r));
+      if (!ok.length){ $("#ifsn", m).textContent = "None of these copies has a blueprint in the module (base game, a hak, or none)."; return; }
+      const keys = ok.map(r => "uti:" + r);
+      // ticks made elsewhere on the page are replaced only after asking
+      if ([...S.bpSel].some(k => !keys.includes(k)) && !await dialog({title: "Replace your ticked blueprints?",
+          html: `You have ${plural(S.bpSel.size, "blueprint")} ticked. Tick the ${plural(ok.length, "item blueprint")} of the copies shown instead?`, ok: "Replace"})) return;
+      S.bpSel.clear(); keys.forEach(k => S.bpSel.add(k));
+      $("#ifsn", m).textContent = `${fmtN(ok.length)} blueprint(s) ticked` + (want.length > ok.length ? `; ${fmtN(want.length - ok.length)} skipped (base game, a hak, or no blueprint)` : "") + ".";
+      changeFields(); };
+    list();
+  }
   // the waiting moves: a count tile and a panel listing them, each with undo
   function drawMoves(){
     if (STATIC) return;
@@ -3221,10 +3284,10 @@ VIEWS.blueprints = async (m) => {
     const ua = $("#bpundoall", m); if (ua) ua.onclick = async () => { if (await dialog({title: "Undo all moves", html: `Cancel all ${plural(nMoves(), "waiting move")}? Nothing has been changed yet, so nothing else is affected.`, ok: "Undo all"})) undo(null, null); };
     // the waiting field changes (faction, name, tag, description)
     const fl = Object.entries(fchanges).flatMap(([x, v]) => Object.entries(v).flatMap(([rr, fs]) => Object.entries(fs).map(([f, c]) => {
-      const b = pal.types[x].blueprints.find(b_ => b_.resref === rr); return {x, rr, f, label: pal.types[x].label, name: b ? b.name : rr, from: c.from, to: c.to}; })));
+      const b = pal.types[x].blueprints.find(b_ => b_.resref === rr); return {x, rr, f, label: pal.types[x].label, name: b ? b.name : rr, from: c.from, to: c.to, all: c.copies === "all"}; })));
     if (fl.length){
       $("#bpmv", m).insertAdjacentHTML("beforeend", `<details class="card"><summary><b>${plural(fl.length, "field change")} waiting for the next Build &amp; audit</b> <span class="small muted">the blueprint and every placed copy still holding the old value</span></summary>
-        <div class="tw"><table class="dt small"><thead><tr><th>Type</th><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th></th></tr></thead><tbody>${fl.map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.name)} <span class="mono muted">${esc(r.rr)}</span></td><td>${esc(r.f.replace(/_/g, " "))}</td><td>${esc(fieldText(r.f, r.from))}</td><td><b>${esc(fieldText(r.f, r.to))}</b></td><td><a href="#" data-fundo="${esc(r.x + ":" + r.rr + ":" + r.f)}">undo</a></td></tr>`).join("")}</tbody></table></div>
+        <div class="tw"><table class="dt small"><thead><tr><th>Type</th><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th></th></tr></thead><tbody>${fl.map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.name)} <span class="mono muted">${esc(r.rr)}</span></td><td>${esc(r.f.replace(/_/g, " "))}</td><td>${esc(fieldText(r.f, r.from))}</td><td><b>${esc(fieldText(r.f, r.to))}</b>${r.all ? ' <span class="small muted">(all placed copies)</span>' : ""}</td><td><a href="#" data-fundo="${esc(r.x + ":" + r.rr + ":" + r.f)}">undo</a></td></tr>`).join("")}</tbody></table></div>
         <button class="btn" id="bpfundoall">Undo all field changes</button></details>`);
       $("#bpmv", m).querySelectorAll("[data-fundo]").forEach(a => a.onclick = e => { e.preventDefault(); const [x, rr, f] = a.dataset.fundo.split(":"); fundo(x, [rr], f); });
       $("#bpfundoall", m).onclick = async () => { if (await dialog({title: "Undo all field changes", html: `Cancel all ${plural(nFields(), "waiting field change")}? Nothing has been changed yet.`, ok: "Undo all"})) fundo(null, null); };
@@ -3245,26 +3308,29 @@ VIEWS.blueprints = async (m) => {
     const facs = ((S.rep.factions || {}).factions || []);
     const md = h(`<div class="modal"><div class="box" role="dialog" aria-modal="true" aria-label="Change fields"><div class="bh"><b>Change fields of ${plural(rrs.length, t.label.toLowerCase().slice(0, -1))}</b></div>
       <div class="bb small" id="cfb"><p class="muted">Fill only what should change; empty fields stay as they are. The same value goes to every ticked blueprint, and to every copy placed in an area that still holds the blueprint's old value.</p>
-        ${fields.map(f => `<label class="small" style="display:block;margin:6px 0"><b>${esc(f.replace(/_/g, " "))}</b><br>${f === "faction" ? `<select class="f" data-cf="faction"><option value="">(unchanged)</option>${facs.map(fa => `<option value="${fa.id}">${esc(fa.name)} (#${fa.id})</option>`).join("")}</select>`
+        ${fields.map(f => `<label class="small" style="display:block;margin:6px 0"><b>${esc(f.replace(/_/g, " "))}</b>${f === "undroppable" ? ' <span class="muted">(the Cursed flag: a player can\'t drop it)</span>' : ""}<br>${f === "faction" ? `<select class="f" data-cf="faction"><option value="">(unchanged)</option>${facs.map(fa => `<option value="${fa.id}">${esc(fa.name)} (#${fa.id})</option>`).join("")}</select>`
+          : BP_FLAG_FIELDS.includes(f) ? `<select class="f" data-cf="${f}"><option value="">(unchanged)</option><option value="yes">yes</option><option value="no">no</option></select>`
           : f.includes("description") ? `<textarea class="wide" rows="3" data-cf="${f}"></textarea>` : `<input type="text" class="wide" data-cf="${f}" ${f === "tag" ? 'maxlength="32"' : ""}>`}</label>`).join("")}
+        ${x === "uti" ? `<label class="small" style="display:block;margin:8px 0"><input type="checkbox" id="cfall"> Set the flags on <b>all placed copies</b> too - also copies that have their own value (names, tags and descriptions always keep a copy's own)</label>` : ""}
         <p class="muted">A new name or description replaces the text in every language (and a talk-table entry it came from). A tag that scripts or conversations look up can't be changed here - Find &amp; replace renames those everywhere.</p></div>
       <div class="bf row"><span class="grow"></span><button class="btn" id="cfno">Cancel</button><button class="btn primary" id="cfok">Preview…</button></div></div></div>`);
     const close = openModal(md, () => close(), md.querySelector("[data-cf]"));
     $("#cfno", md).onclick = () => close();
     const values = () => Object.fromEntries([...md.querySelectorAll("[data-cf]")].map(e => [e.dataset.cf, e.value]).filter(([k, v]) => String(v).trim() !== ""));
-    let planned = null;
+    let planned = null, allc = false;    // all_copies: item flags also go to placed copies holding their own value
     $("#cfok", md).onclick = async () => {
       if (planned){                                   // second press: Save (the server plans again)
-        let r; try { r = await post("/api/bpchange/save", {a: S.cur, ext: x, resrefs: rrs, values: planned}); }
+        let r; try { r = await post("/api/bpchange/save", {a: S.cur, ext: x, resrefs: rrs, values: planned, all_copies: allc}); }
         catch(e){ $("#cfb", md).insertAdjacentHTML("beforeend", `<div class="note warn">${esc(e.message)}</div>`); return; }
         close(); fchanges = r.changes; S.bpSel.clear(); draw(); return;
       }
       const v = values(); if (!Object.keys(v).length) return;
-      let p; try { p = await post("/api/bpchange/plan", {a: S.cur, ext: x, resrefs: rrs, values: v}); }
+      allc = !!($("#cfall", md) || {}).checked;
+      let p; try { p = await post("/api/bpchange/plan", {a: S.cur, ext: x, resrefs: rrs, values: v, all_copies: allc}); }
       catch(e){ $("#cfb", md).insertAdjacentHTML("beforeend", `<div class="note warn">${esc(e.message)}</div>`); return; }
       $("#cfb", md).innerHTML = `<ul><li><b>${fmtN(p.changes.length)}</b> change(s)</li><li>${fmtN(p.unchanged)} already so</li><li><b style="color:var(--${p.refused.length ? "critical" : "good"}-text)">${fmtN(p.refused.length)}</b> refused</li></ul>
         ${p.refused.length ? `<h4>Refused</h4><div class="tw" style="max-height:180px;overflow:auto"><table class="dt small"><tbody>${p.refused.map(r_ => `<tr><td class="mono">${esc(r_.item.split(":")[1])}</td><td>${esc(r_.why)}</td></tr>`).join("")}</tbody></table></div>` : ""}
-        ${p.changes.length ? `<h4>Changes</h4><div class="tw" style="max-height:240px;overflow:auto"><table class="dt small"><thead><tr><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th>Placed copies</th></tr></thead><tbody>${p.changes.slice(0, 1000).map(c => `<tr><td>${esc(c.name)} <span class="mono muted">${esc(c.resref)}</span></td><td>${esc(c.field.replace(/_/g, " "))}</td><td>${esc(fieldText(c.field, c.from))}</td><td><b>${esc(fieldText(c.field, c.to))}</b></td><td class="num" title="placed in areas; only those still holding the old value change">up to ${fmtN(c.placed)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+        ${p.changes.length ? `<h4>Changes</h4><div class="tw" style="max-height:240px;overflow:auto"><table class="dt small"><thead><tr><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th>Placed copies</th></tr></thead><tbody>${p.changes.slice(0, 1000).map(c => `<tr><td>${esc(c.name)} <span class="mono muted">${esc(c.resref)}</span></td><td>${esc(c.field.replace(/_/g, " "))}</td><td>${esc(fieldText(c.field, c.from))}</td><td><b>${esc(fieldText(c.field, c.to))}</b>${c.copies === "all" && String(c.from) === String(c.to) ? ' <span class="muted">(blueprint already so: placed copies only)</span>' : ""}</td><td class="num" title="${c.copies === "all" ? "placed in areas; every copy that doesn't hold the new value changes" : "placed in areas; only those still holding the old value change"}">${c.copies === "all" ? "all" : "up to"} ${fmtN(c.placed)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
       if (!p.changes.length){ $("#cfok", md).hidden = true; return; }
       planned = v; $("#cfok", md).textContent = `Save ${fmtN(p.changes.length)} change${p.changes.length === 1 ? "" : "s"}`;
     };

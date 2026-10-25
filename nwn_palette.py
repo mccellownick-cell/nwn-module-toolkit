@@ -25,8 +25,9 @@ What palette.json holds
 -----------------------
     sources     ["module", "<hak name>", ...]; a blueprint's "src" is an index into it
     types       per blueprint type (uti, utc, ...): label, tree_source, notes, categories
-                [{name, parent, id, path}], blueprints [{node, resref, name, tag, src, pid, cat, cr?, stale?,
-                hidden?}], missing [{resref, cat}] (listed by the palette file, no such blueprint)
+                [{name, parent, id, path}], blueprints [{node, resref, name, tag, src, pid, cat, cr?, base?, flags?,
+                stale?, hidden?}], missing [{resref, cat}] (listed by the palette file, no such blueprint). An item's
+                flags lists which of stolen / plot / undroppable (its Cursed field) are set; absent when none.
     summary     blueprints, unplaced (in no category), stale, hidden (copies load order hides)
 "cat" is an index into categories, or null when no category has the blueprint's PaletteID.
 
@@ -68,7 +69,11 @@ TYPES = {"uti": ("item", "Items"), "utc": ("creature", "Creatures"), "utp": ("pl
 # the field holding a blueprint's palette number: PaletteID, except in stores (.utm), which call it ID
 PALETTE_FIELD = {ext: ("ID" if ext == "utm" else "PaletteID") for ext in TYPES}
 SEP = " › "                # between category names in a palette path, as the rest of the dashboard writes paths
-VERSION = 2                # of palette.json; the dashboard rebuilds a file with another version (2: base items)
+VERSION = 3                # of palette.json; the dashboard rebuilds a file with another version (2: base items,
+                           # 3: item flags)
+# an item's Stolen / Plot / Cursed fields as the page names them (Cursed = undroppable: NWScript SetItemCursedFlag,
+# "a cursed item cannot be dropped")
+ITEM_FLAGS = (("Stolen", "stolen"), ("Plot", "plot"), ("Cursed", "undroppable"))
 
 
 def _source_name(kind, path):
@@ -164,7 +169,8 @@ def build_palette(analysis, write=True, verbose=False):
         # top-level fields: an inventory item inside a creature has its own PaletteID further down.
         extra = defaultdict(dict)
         for fid, label, value in db.execute("SELECT file_id, label, value FROM fields WHERE label IN "
-                                            "('PaletteID', 'ID', 'ChallengeRating', 'BaseItem') AND path=label"):
+                                            "('PaletteID', 'ID', 'ChallengeRating', 'BaseItem', 'Stolen', 'Plot', 'Cursed') "
+                                            "AND path=label"):
             extra[fid][label] = value
         copies = defaultdict(list)                # (ext, resref) -> [(rank, row)]
         for fid, sid, node, resref, tag, name, ext in db.execute(
@@ -182,6 +188,10 @@ def build_palette(analysis, write=True, verbose=False):
                     pass                          # no rating stored: the column stays empty
             elif ext == "uti" and _int(ex.get("BaseItem")) is not None:
                 row["base"] = _int(ex["BaseItem"])   # row of baseitems.2da (longsword, ring...): a page filter
+            if ext == "uti":
+                fl = [nm for lab, nm in ITEM_FLAGS if _int(ex.get(lab))]
+                if fl:
+                    row["flags"] = fl                # e.g. ["stolen", "undroppable"]; absent = none set
             copies[(ext, row["resref"])].append((rank(sid), row))
         used_bases = {r["base"] for lst in copies.values() for _rk, r in lst if "base" in r}
         base_names = _base_item_names(db, srcs, rank, meta, tlks, used_bases)
@@ -324,8 +334,8 @@ def _one_type(ext, stem, label, itps, read_rows, copies, tlks, names):
             elif where != win["cat"]:
                 win["stale"] = f"the palette file lists it under {categories[where]['path']}"
         if len(ranked) > 1:
-            win["hidden"] = [dict(src=r["src"], name=r["name"], tag=r["tag"], pid=r["pid"], cat=by_id.get(r["pid"]))
-                             for r in ranked[1:]]
+            win["hidden"] = [dict(src=r["src"], name=r["name"], tag=r["tag"], pid=r["pid"], cat=by_id.get(r["pid"]),
+                                  **({"flags": r["flags"]} if r.get("flags") else {})) for r in ranked[1:]]
         blueprints.append(win)
     missing = [dict(resref=r, cat=c) for r, c in sorted(listed.items()) if r not in have]
     return dict(label=label, tree_source=tree_source, notes=notes, categories=categories, blueprints=blueprints,
@@ -333,7 +343,13 @@ def _one_type(ext, stem, label, itps, read_rows, copies, tlks, names):
 
 
 # move_to is left empty: fill it in a spreadsheet and import the file on the Blueprints page (plan_import)
-CSV_COLUMNS = ["type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "note", "move_to"]
+CSV_COLUMNS = ["type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "stolen", "plot",
+               "undroppable", "note", "move_to"]
+
+
+def _flag_cells(b):
+    """An item copy's stolen / plot / undroppable CSV cells: "yes" or blank (blank for other blueprint types)."""
+    return {nm: "yes" if nm in b.get("flags", ()) else "" for _lab, nm in ITEM_FLAGS}
 
 
 def csv_rows(pal):
@@ -346,9 +362,11 @@ def csv_rows(pal):
         for b in t["blueprints"]:
             base = dict(type=t["label"], resref=b["resref"], cr="" if b.get("cr") is None else b["cr"])
             out.append(dict(base, palette=where(b["cat"]), name=b["name"], tag=b["tag"], source=src[b["src"]],
+                            **_flag_cells(b),
                             palette_number="" if b["pid"] is None else b["pid"], note=b.get("stale", ""), move_to=""))
             for x in b.get("hidden", ()):
                 out.append(dict(base, palette=where(x["cat"]), name=x["name"], tag=x["tag"], source=src[x["src"]],
+                                **_flag_cells(x),
                                 palette_number="" if x["pid"] is None else x["pid"],
                                 note=f"hidden by {src[b['src']]} (the game uses that copy)", move_to=""))
     return out

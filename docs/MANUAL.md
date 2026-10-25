@@ -319,7 +319,12 @@ files back (it never overwrites a file that has reappeared).
 
 ### 4.9 Compare modules
 **Compare modules** (under Start) shows what changed between two copies: pick the older and newer copy (a `.mod`, a
-module folder, or a snapshot) and optionally an analysis for impact levels. You get:
+module folder, or a snapshot) and optionally an analysis for impact levels. The pick list offers your analysed modules,
+the `.mod` files in their folders (newest first, with date and size) and your snapshots. A module that has been
+renamed, moved or archived since it was analysed is not offered (the page lists it as *not offered*), and the Modules
+page marks its analysis **file not found**. If a path you type is not there, the warning says so and names files in the
+same folder with the same name apart from date stamps (for example `20261011_Name.mod` for `Name.mod`), the likely
+renamed copy. You get:
 - counts of added, removed and changed files, and the size change,
 - for each changed file: the **fields** that differ (path, old value, new value) for areas, blueprints, placed objects,
   conversations and `module.ifo`, or a **line-by-line diff** for scripts and 2das,
@@ -543,11 +548,24 @@ out of date, and copies hidden by load order.
   from the English labels in a hak's palette skeleton (`itempal.itp`...). A name that can't be read shows as
   `#<number>`.
 - **Filters** next to the search box: **Any category** (a category counts with all its sub-categories), **Any source**
-  (the module or one hak), **Any base item** (items only: longsword, ring...; the names come from `baseitems.2da`), and
+  (the module or one hak), **Any base item** (items only: longsword, ring...; the names come from `baseitems.2da`), **Any
+  item flags** (items only: **Any flag set**, **Stolen**, **Plot**, **Undroppable** or **No flag set**), and
   the tick boxes **In no category**, **Palette file out of date** and **Waiting move**. In the Palette tree any search or
   filter shows one list of the matches, each with its palette path.
-- **Export CSV** saves the rows in view (the same-name view adds the group), with a `waiting_move` column and an empty
-  `move_to` column for importing (below). `reports/palette.csv` holds every copy of every type. A value that starts with
+- **Flags** column (items): **Stolen**, **Plot** and **Undroppable** for each item blueprint that has them set.
+  Undroppable is the item's *Cursed* flag (the toolset and scripts call it cursed: a player can't drop the item).
+- **Placed item flags**: the items already placed in areas - in a creature's inventory or equipment, a container, a
+  store or on the ground - that have a flag set, or whose flags differ from their blueprint's. The tiles count all
+  placed items, each flag, and the copies that differ. Each row gives the item, its flags, its **blueprint's flags**
+  (*base game* when the blueprint is the game's own, *no blueprint* when none exists), **Differs**, the **area**, who
+  **holds** it (click to open that creature, container or store) and where it sits in the area file. Filter by flag,
+  tick **Differs from its blueprint**, search by name, tag, resref, area or holder, and **Export CSV**. A placed item is a
+  copy that keeps its own flags, so this is the list to check after changing blueprints. Items the game makes from a
+  blueprint when it needs one (a store or creature blueprint that lists an item by name only, a script) use the
+  blueprint's flags and are not listed. **Change their blueprints…** ticks the module blueprints of the copies shown and
+  opens **Change fields…** (below).
+- **Export CSV** saves the rows in view (the same-name view adds the group), with `stolen`, `plot` and `undroppable`
+  columns for items, a `waiting_move` column and an empty `move_to` column for importing (below). `reports/palette.csv` holds every copy of every type. A value that starts with
   `=`, `+`, `-` or `@` is written with a leading `'` so a spreadsheet shows it instead of running it.
 
 **Moving blueprints to another category.** Tick module blueprints (in the tree, the search results or the Same name
@@ -579,20 +597,25 @@ reason - an unknown type, blueprint or category, a category that can't hold blue
 the next Build & audit like any other.
 
 **Changing fields in bulk.** Tick blueprints of one type and press **Change fields…**. Fill only what should change;
-empty boxes stay as they are. What can be changed: items - name, description, unidentified description, tag;
+empty boxes stay as they are. What can be changed: items - name, description, unidentified description, tag,
+stolen, plot, undroppable (each yes or no);
 creatures - first name, last name, description, tag, faction (picked by name from the module's factions); placeables
 and doors - name, description, tag; stores and sounds - name, tag; triggers and encounters - name, tag; waypoints -
 name, description, tag. **Preview…** lists every change (from → to) and every refusal with its reason, then **Save N
 changes** stores them in `blueprint_changes.json` in the analysis folder. As with moves, nothing changes until the next
 **Build & audit**, which sets the new values on the blueprint and on every copy placed in an area that still holds the
-blueprint's old value (a placed copy you changed by hand keeps yours); every change is logged in `changes.md`
+blueprint's old value (a placed copy you changed by hand keeps yours). For item flags, tick **Set the flags on all
+placed copies too** to set every placed copy, also those with their own value - the usual choice after checking
+**Placed item flags**; the preview then says *all N* placed copies, and *placed copies only* when the blueprint already
+has that value. Every change is logged in `changes.md`
 (*Blueprint changes*) and the audit checks each one landed. A new name or description replaces the text in every
 language. Refused, with the reason: a blueprint whose copy in a hak wins; a tag longer than 32 characters or blank; a
 tag that scripts or conversations look up (renaming it would break them - use **Find & replace**, which renames it
 everywhere); a new tag that scripts already look up for something else; a faction the module doesn't have. Waiting
 changes show on each row and in the panel at the top, each with **undo**. In a spreadsheet, the export's `new_name`,
-`new_tag`, `new_description`, `new_faction`... columns work like `move_to`: fill them, **Import…**, check the preview,
-**Save**. `blueprint_changes.json` is your own work, like the moves.
+`new_tag`, `new_description`, `new_faction`, `new_stolen`, `new_plot`, `new_undroppable` (yes / no)... columns work like
+`move_to`: fill them, **Import…**, check the preview, **Save**; `all_copies` = yes on a row sends its flag changes to
+all placed copies. `blueprint_changes.json` is your own work, like the moves.
 
 The page is built from the analysis; an analysis made before this page existed gets its data the first time the page
 is opened (nothing is re-analysed, and only `palette.json` and `reports/palette.csv` are written in the analysis

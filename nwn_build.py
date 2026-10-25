@@ -109,9 +109,10 @@ class Rewriter:
         self.move_tree_exts = set(move_tree_exts)   # types whose palette file the game uses is the module's own
         self.moved_bps = set()            # (ext, resref) whose palette number was set
         self.moved_entries = set()        # (ext, resref) the module's palette file now lists under the new category
-        # bulk blueprint changes (Blueprints page; set by build()): (ext, resref) -> {label: (old, new, field)}. The
-        # blueprint gets the new values; a placed copy (same TemplateResRef, in an area) gets each one whose field
-        # still holds the blueprint's old value - a copy the builder gave its own name keeps it
+        # bulk blueprint changes (Blueprints page; set by build()): (ext, resref) -> {label: (old, new, field, every)}.
+        # The blueprint gets the new values; a placed copy (same TemplateResRef, in an area) gets each one whose field
+        # still holds the blueprint's old value - a copy the builder gave its own name keeps it - or, for an item flag
+        # saved with "all placed copies" (every), each one that doesn't hold the new value yet
         self.bp_changes = {}
         self.bc_applied = set()           # (ext, resref) whose blueprint got its changes
         self.bc_placed = defaultdict(int)  # (ext, resref, field) -> placed copies changed
@@ -146,7 +147,7 @@ class Rewriter:
             if key in self.palette_moves:
                 self._move_blueprint(root, key)
             if key in self.bp_changes:
-                for label, (_old, new, field) in self.bp_changes[key].items():
+                for label, (_old, new, field, _every) in self.bp_changes[key].items():
                     if label in root.fields:
                         if root.get(label) != new:
                             self._set_value(root, label, new, "", "blueprint change (Blueprints page)")
@@ -186,9 +187,23 @@ class Rewriter:
         self._walk_fields(s, path, ctx_ext, is_root=is_root)
         if self.bp_changes and ctx_ext and not is_root and "TemplateResRef" in s.fields:
             tr = (s.get("TemplateResRef") or "").lower()
-            for label, (old, new, field) in self.bp_changes.get((ctx_ext, tr), {}).items():
-                if label in s.fields and s.get(label) == old:
-                    self._set_value(s, label, new, path, "placed copy follows its blueprint (Blueprints page)")
+            for label, (old, new, field, every) in self.bp_changes.get((ctx_ext, tr), {}).items():
+                flag = field in nwn_bpchanges.FLAG_FIELDS
+                if label not in s.fields and not flag:
+                    continue                     # a text/tag/faction the copy doesn't have: nothing to follow
+                # an item flag the copy doesn't store is not set (0), as the game reads it
+                cur = (int(s.get(label) or 0) if label in s.fields else 0) if flag else s.get(label)
+                # a copy follows when it still holds the blueprint's old value; with "all copies" (item flags) every
+                # copy that doesn't already hold the new value
+                if (cur == old or every) and cur != new:
+                    why = ("placed copy follows its blueprint (Blueprints page)" if cur == old else
+                           "placed copy set like its blueprint - all copies (Blueprints page)")
+                    if label in s.fields:
+                        self._set_value(s, label, new, path, why)
+                    else:                        # add the missing flag, logged like a blueprint's added field
+                        s.set(label, BC_TYPE[field], new)
+                        self.changes.append(dict(file=self.cur, field=f"{path}/{label}".strip("/"), old=None,
+                                                 new=_logval(new), why=why))
                     self.bc_placed[(ctx_ext, tr, field)] += 1
         for label, f in s.fields.items():
             if f.type == n.STRUCT:
@@ -340,7 +355,7 @@ def _finish_palette_moves(move_log, rw, tree_exts):
 TYPE_LABEL = {ext: label for ext, (_stem, label) in PALETTE_TYPES.items()}    # uti -> Items (change log)
 # GFF field type of each bulk-changeable field, for a blueprint that lacks the field altogether
 BC_TYPE = {f: n.CEXOLOCSTRING for f in nwn_bpchanges.TEXT_FIELDS}
-BC_TYPE.update(tag=n.CEXOSTRING, faction=n.WORD)
+BC_TYPE.update(tag=n.CEXOSTRING, faction=n.WORD, **{f: n.BYTE for f in nwn_bpchanges.FLAG_FIELDS})
 
 
 def _logval(v):
@@ -353,7 +368,8 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
 
     changes: the waiting changes; files: the module's files rows (relpath, resref, ext, node, sha); read(relpath):
     the bytes the build will copy (the edits overlay's copy when there is one). Each blueprint is read to learn its
-    old values, which decide which placed copies follow. Returns ({(ext, resref): {label: (old, new, field)}}, log
+    old values, which decide which placed copies follow. Returns ({(ext, resref): {label: (old, new, field, every)}}
+    - every: the change has copies "all", so placed copies holding their own value change too - , log
     entries [{type, resref, field, from, to, status "changed"/"skipped", note, placed}]). plan["blueprint_changes"]
     false applies none. Never raises for a bad file: such a change is skipped with a note."""
     if not plan.get("blueprint_changes", True) or not changes:
@@ -364,7 +380,8 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
         for rr, fields in sorted(bps.items()):
             node = f"bp:{rr}.{ext}"
             entries = [dict(type=ext, resref=rr, field=f, to=v.get("to"), status="skipped", note="", placed=0,
-                            **{"from": v.get("from")}) for f, v in sorted(fields.items())]
+                            **{"from": v.get("from")}, **({"copies": "all"} if v.get("copies") == "all" else {}))
+                       for f, v in sorted(fields.items())]
             log += entries
             rel = where.get((ext, rr))
             why = ("deleted in this build" if node in delete_nodes else
@@ -388,7 +405,11 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
                     e["note"] = f"'{e['to']}' is not a valid value"
                     continue
                 old = root.get(label) if label in root.fields else None
-                out.setdefault((ext, rr), {})[label] = (old, new, e["field"])
+                if e["field"] in nwn_bpchanges.FLAG_FIELDS:
+                    old = int(old or 0)          # a missing flag is not set (as in the game): copies holding 0 follow
+                # "all copies" only for item flags (nwn_bpchanges.FLAG_FIELDS); names, tags... keep a copy's own value
+                every = e.get("copies") == "all" and e["field"] in nwn_bpchanges.FLAG_FIELDS
+                out.setdefault((ext, rr), {})[label] = (old, new, e["field"], every)
                 e["status"] = "changed"
     return out, log
 
@@ -1217,7 +1238,7 @@ def write_changes_md(path, log):
         L += ["", "## Blueprint changes", "", "| Type | Blueprint | Field | From | To | Placed copies | Result |",
               "|---|---|---|---|---|---|---|"]
         L += [f"| {TYPE_LABEL.get(c['type'], c['type'])} | {c['resref']} | {c['field']} | {c['from']} | {c['to']} | "
-              f"{c.get('placed', 0)} | {c['status']}{': ' + c['note'] if c.get('note') else ''} |"
+              f"{c.get('placed', 0)}{' (all copies)' if c.get('copies') == 'all' else ''} | {c['status']}{': ' + c['note'] if c.get('note') else ''} |"
               for c in log["blueprint_changes"]]
     L += ["", "## Rewritten references", "", "| File | Field | Old | New | Why |", "|---|---|---|---|---|"]
     L += [f"| {c['file']} | {c['field']} | {c['old']} | {c['new']} | {c['why']} |" for c in log["field_changes"]]

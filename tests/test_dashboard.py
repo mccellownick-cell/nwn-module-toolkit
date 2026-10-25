@@ -426,6 +426,40 @@ def test_install_endpoints(sv, a, out, tmp):
         D.save_settings(keep)
 
 
+def test_compare_moved_module(tmp):
+    """Compare modules: a module renamed after it was analysed is not offered, a missing path names the likely
+    renamed copy in the same folder, and both paths are checked before either is refused (a module analysed as
+    Name.mod and later renamed 20261011_Name.mod)."""
+    mods = os.path.join(tmp, "cmp_mods"); os.makedirs(mods)
+    for nm in ("20261011_Name.mod", "Name_2026-10-10.mod", "Name_1a.mod", "Other.mod"):
+        w(mods, nm, b"x")
+    gone = os.path.join(mods, "Name.mod")
+    names = [c["name"] for c in D.renamed_candidates(gone)]
+    check("compare: a missing module names its date-stamped renames in the same folder, not other copies",
+          sorted(names) == ["20261011_Name.mod", "Name_2026-10-10.mod"], names)
+    p = D._diff_problem(gone, "Older copy")
+    check("compare: the message says not found, renamed/moved, and names the candidate",
+          p and "Older copy not found" in p and "renamed" in p and "20261011_Name.mod" in p, p)
+    check("compare: an existing file is fine", D._diff_problem(os.path.join(mods, "Other.mod"), "Newer copy") is None)
+    check("compare: a missing folder says so", "folder is not there" in D._diff_problem(os.path.join(tmp, "nope", "a.mod"), "Older copy"))
+    try:
+        D.api_diff_compare(dict(older=gone, newer=os.path.join(tmp, "nope.mod")))
+        err = ""
+    except ValueError as e:
+        err = str(e)
+    check("compare: both bad paths are reported in one refusal", "Older copy not found" in err and "Newer copy not found" in err, err)
+    with mock.patch.object(D, "list_analyses", lambda: [dict(name="gone", module_path=gone),
+                                                        dict(name="here", module_path=os.path.join(mods, "Other.mod"))]):
+        st_ = D.api_diff_state({})
+    ex = {a["name"]: a["exists"] for a in st_["analyses"]}
+    check("compare state: each analysis says whether its module file is still there", ex == {"gone": False, "here": True}, ex)
+    check("compare state: the .mod files in the analysed modules' folder are offered",
+          {f["name"] for f in st_["files"]} == {"20261011_Name.mod", "Name_2026-10-10.mod", "Name_1a.mod", "Other.mod"}, st_["files"])
+    html = open(os.path.join(os.path.dirname(D.__file__), "dashboard.html"), encoding="utf-8").read()
+    check("dashboard.html: Compare offers only analysed paths that exist, and the Modules page marks a missing file",
+          "st.analyses.filter(a => a.exists)" in html and "a.module_missing" in html)
+
+
 def main():
     """Run every group of checks in a temporary folder; returns the exit code (tests/_harness.summary)."""
     a = "dashtest"
@@ -444,7 +478,7 @@ def main():
                              (test_read_only_index, (a, out, tmp)), (test_settings_copy, ()), (test_jobs_pruned, ()),
                              (test_icons, (out,)), (test_export, (a, out)), (test_graph_cache, (a, out)),
                              (test_compiled_code_order, (a,)), (test_quickscan_override_text, ()),
-                             (test_install_endpoints, (sv, a, out, tmp))):
+                             (test_install_endpoints, (sv, a, out, tmp)), (test_compare_moved_module, (tmp,))):
                 h.run(fn, *args)
         finally:
             if sv:

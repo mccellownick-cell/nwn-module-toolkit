@@ -70,7 +70,8 @@ def workspace_dir(here=HERE):
 # Bump WORK_FORMAT whenever a version adds a new kind of saved work that a build applies, or extends an existing one
 # (a new field in blueprint_changes.json...). Every function that saves such work calls claim_work() first.
 #   1 = toolkit 1.5.0: palette_moves.json (palette moves) and blueprint_changes.json (name/tag/description/faction)
-WORK_FORMAT = 1
+#   2 = toolkit 1.5.4: blueprint_changes.json item flags (stolen / plot / undroppable) and "copies": "all"
+WORK_FORMAT = 2
 WORK_FILE = "toolkit.json"          # <analysis>/toolkit.json: {"work_format", "saved_with", "saved_at"}
 
 # --- (b) what analysing again adds --------------------------------------------------------------------------
