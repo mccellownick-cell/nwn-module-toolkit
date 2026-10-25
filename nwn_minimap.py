@@ -355,6 +355,14 @@ def transitions(areas, objects):
             by_tag[o["tag"]].append(o)
             by_tag_ci[o["tag"].lower()].append(o)
     links, findings = [], []
+    # how far the area's real content reaches (doors and waypoints excluded: a stray destination must not widen it)
+    extent = defaultdict(lambda: [0.0, 0.0])
+    for o in objects:
+        if o["kind"] in ("Door List", "WaypointList"):
+            continue
+        e = extent[o["area"]]
+        e[0] = max(e[0], float(o.get("x") or 0))
+        e[1] = max(e[1], float(o.get("y") or 0))
 
     def lab(o):
         return f"{o['kind'].replace(' List', '').replace('List', '').lower()} {o['tag'] or o['path']}"
@@ -412,8 +420,16 @@ def transitions(areas, objects):
         p_src, p_dst = _centre(o), (d["x"], d["y"])
         Wb, Hb = int(b.get("Width") or 0) * TILE_M, int(b.get("Height") or 0) * TILE_M
         if not (0 <= p_dst[0] <= Wb and 0 <= p_dst[1] <= Hb):
-            find("error", "dest_outside", o, f"destination '{to}' at ({p_dst[0]:.0f}, {p_dst[1]:.0f}) is outside "
-                 f"{nm(d['area'])} ({Wb:.0f} x {Hb:.0f} m)", "Move the destination inside the area.")
+            ex, ey = extent[d["area"]]
+            if ex > Wb or ey > Hb:
+                # the area's own content already stands outside its declared box, so the box is stale - not an error
+                find("info", "dest_outside", o, f"destination '{to}' at ({p_dst[0]:.0f}, {p_dst[1]:.0f}) is past the "
+                     f"{Wb:.0f} x {Hb:.0f} m that {nm(d['area'])} declares, but that area's own content reaches "
+                     f"({ex:.0f}, {ey:.0f}) m - the declared size is stale, so the destination is fine",
+                     "Nothing to do; only the area's Width/Height in the toolset is out of date.")
+            else:
+                find("error", "dest_outside", o, f"destination '{to}' at ({p_dst[0]:.0f}, {p_dst[1]:.0f}) is outside "
+                     f"{nm(d['area'])} ({Wb:.0f} x {Hb:.0f} m)", "Move the destination inside the area.")
         # landing inside a transition trigger of the destination area: the player is sent straight on (or back)
         # (inside the trigger that leads straight back is common and harmless: a trigger fires when walked into, so
         # the player only has to step off it - left out; inside one that leads somewhere else is worth a look)

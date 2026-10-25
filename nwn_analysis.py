@@ -1231,7 +1231,6 @@ def run_analysis(out_dir, verbose=True):
     base_names = {r[0] for r in db.execute("SELECT name FROM base_resources")} \
         if db.execute("SELECT name FROM sqlite_master WHERE name='base_resources'").fetchone() else set()
     haks_missing = json.loads(meta.get("haks_missing") or "[]")
-    found_elsewhere = json.loads(meta.get("found_elsewhere") or "{}")    # absent in indexes made before 1.5.5
 
     def is_base(nid):
         """Does the base game ship a resource with this name? (exact when the NWN install is configured)
@@ -1311,26 +1310,15 @@ def run_analysis(out_dir, verbose=True):
                                       f"(fine if created at runtime); used by {who}"))
         elif t == "blueprint":
             kinds = {k for s, k, v in refs}
-            # where a builder may still have the file (the toolset's temp0, an unlisted hak ...: nwn_index
-            # find_missing_elsewhere); the game doesn't load those places, so the finding stands, but this says where to look
-            elsewhere = found_elsewhere.get(nd["name"])
-            where_note = f". Found elsewhere: {'; '.join(elsewhere)}" if elsewhere else ""
             if kinds <= {"template"}:   # only placed copies use it - they carry their own data, so they still work
                 issues.append(dict(severity="info", category="blueprint_not_in_module", node=nid, label=nid,
                                    detail=f"Placed objects come from blueprint '{nd['name']}' which is not in the "
-                                          f"module (base game/hak, or deleted). Instances still work. Used by {len(refs)} object(s)"
-                                          + where_note))
+                                          f"module (base game/hak, or deleted). Instances still work. Used by {len(refs)} object(s)"))
             elif kinds & {"spawns", "inventory"}:
                 sev = "info" if is_base(nid) else "error"
-                # A tester read "the items were in the module" from the placed copies: they are, but a placed copy is
-                # not a blueprint. Create*/a store/an inventory needs the blueprint file, so say so plainly.
-                placed = sum(1 for s, k, v in refs if k == "template")
-                placed_note = (f". {placed} placed cop{'y' if placed == 1 else 'ies'} of it exist (each keeps its own "
-                               "data and still works), but there is no blueprint file to make new ones from"
-                               if placed else "")
                 issues.append(dict(severity=sev, category="missing_blueprint", node=nid, label=nid,
                                    detail=f"Blueprint '{nd['name']}' is spawned/given but not found in module; used by {who}" +
-                                          not_loaded_hint + placed_note + where_note))
+                                          not_loaded_hint))
         elif t == "script" and is_base(nid):
             issues.append(dict(severity="info", category="base_game_script", node=nid, label=nid,
                                detail=f"Uses base-game script '{nd['name']}' (not in module, supplied by the game); used by {who}"))
@@ -2020,8 +2008,13 @@ def run_analysis(out_dir, verbose=True):
                     cands = item_by_tag.get(lit, [])
                     key = ("tag", lit)
                     if not cands:
-                        needs[key] = dict(kind="tag", name=lit, status="missing", detail="no item in the module has this tag",
-                                          by=g.label(u))
+                        if f"{lit.lower()}.uti" in base_names:
+                            # a stock bioware item: its tag is the blueprint name, so the check works in game
+                            needs[key] = dict(kind="tag", name=lit, status="ok", by=g.label(u),
+                                              detail=f"base-game item ({lit.lower()}.uti)")
+                        else:
+                            needs[key] = dict(kind="tag", name=lit, status="missing",
+                                              detail="no item in the module has this tag", by=g.label(u))
                     elif not any(obtainable(c) for c in cands):
                         needs[key] = dict(kind="tag", name=lit, status="unobtainable", by=g.label(u),
                                           detail="blueprint exists (" + ", ".join(c["resref"] for c in cands[:3]) +
@@ -2522,7 +2515,7 @@ def run_analysis(out_dir, verbose=True):
     summary["asset_duplicate_groups"] = len(asset_dups)
     report = dict(summary=summary, issues=issues, scripts=scripts, items=items, orphan_instances=orphan_instances,
                   orphans=orphans, skins=skins, ai_findings=ai_findings, performance=performance,
-                  duplicates=dups, merge_rules=2, noise_rules=2, area_details=1, missing_bp_notes=1, map_summary=map_summary,
+                  duplicates=dups, merge_rules=2, noise_rules=2, area_details=1, map_summary=map_summary,
                   asset_duplicates=asset_dups, deletions=deletions, areas=areas, conversations=convs, conversation_dynamic_starts=dyn_starts[:300], quests=quests,
                   inferred_quests=inferred, var_audit=var_audit, pw_performance=pw_perf, factions=factions, databases=databases,
                   files=file_rows, models=models, hierarchy=g.hierarchy(),

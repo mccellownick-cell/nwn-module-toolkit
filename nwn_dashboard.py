@@ -122,6 +122,7 @@ import nwnlib as n
 import nwn_2da
 import nwn_analysis
 import nwn_archive
+import nwn_assistant as A
 import nwn_bpchanges
 import nwn_build
 import nwn_compile
@@ -305,7 +306,7 @@ def open_in_tool(name, file_path):
     app = _is_mac_app(exe)
     if not app and not os.path.isfile(exe):
         raise ValueError(f"{exe} does not exist - fix the path in Settings")
-    if os.name == "nt" and not app and not exe.lower().endswith(".exe"):
+    if os.name == "nt" and not exe.lower().endswith(".exe"):
         # .bat/.cmd are refused: Windows runs them through cmd.exe, which would interpret characters like & in a file name
         raise ValueError(f"{exe} is not a program (.exe)")
     if not app and not os.access(exe, os.X_OK):
@@ -1255,34 +1256,14 @@ def api_palette_import(q, data):
         return out
 
 
-ITEMFLAGS_CACHE = {}     # analysis folder -> (index mtime, all, data): the list is worked out once per analysis
-
-
-def item_flags_data(d, all_copies=False):
-    """The Placed item flags list of analysis folder d (nwn_itemflags.placed_item_flags), kept in memory until the
-    index changes. all_copies: also copies with no flag that match their blueprint. Read-only."""
-    import nwn_itemflags
-    mt = os.path.getmtime(os.path.join(d, "index.sqlite"))
-    hit = ITEMFLAGS_CACHE.get(d)
-    if hit and hit[0] == mt and hit[1] == all_copies:
-        return hit[2]
-    data = nwn_itemflags.placed_item_flags(d, palette_data(d), all_copies=all_copies)
-    ITEMFLAGS_CACHE[d] = (mt, all_copies, data)
-    return data
-
-
 def _bpchange_plan(b):
-    """The analysis folder and the plan for a Change fields… request (a, ext, resrefs, values {field: text},
-    all_copies)."""
+    """The analysis folder and the plan for a Change fields… request (a, ext, resrefs, values {field: text})."""
     d = analysis_dir(field(b, "a"))
     resrefs, values = field(b, "resrefs", list), field(b, "values", dict)
     if not all(isinstance(x, str) for x in resrefs) or not all(isinstance(v, (str, int)) for v in values.values()):
         raise ValueError("fields 'resrefs' (names) and 'values' (texts) are needed")
     ctx = nwn_bpchanges.load_context(d, palette_data(d))
-    # all_copies: item flags also go to placed copies holding their own value (nwn_bpchanges.plan_values)
-    allc = b.get("all_copies")
-    allc = allc is True or str(allc).strip().lower() in ("1", "yes", "true")    # "false" from a script is not true
-    return d, nwn_bpchanges.plan_values(ctx, field(b, "ext"), resrefs, values, allc)
+    return d, nwn_bpchanges.plan_values(ctx, field(b, "ext"), resrefs, values)
 
 
 def api_bpchange_plan(b):
@@ -1411,12 +1392,8 @@ def list_analyses():
             except Exception:  # noqa
                 summ = {}
             # module_source: a nasher project's folder (module_path is then the converted copy it indexed)
-            src = summ.get("module_source") or summ.get("module_path")
             out.append(dict(name=nm, module_name=summ.get("module_name", nm), module_path=summ.get("module_path"),
                             module_source=summ.get("module_source"),
-                            # the analysed .mod / folder / nasher project is gone (renamed, moved or archived since):
-                            # Analyse again and Compare can't read it until it is pointed at the new name
-                            module_missing=bool(src) and not os.path.exists(src),
                             indexed_at=summ.get("indexed_at"),
                             has_build=os.path.isfile(os.path.join(WORKSPACE, nm, "build", "audit.json"))))
     return out
@@ -1754,7 +1731,7 @@ def compile_one(analysis, relpath):
     with LOCK:
         rows = db.execute("SELECT name, source FROM scripts").fetchall()
         meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
-    work = tempfile.mkdtemp(prefix="nwn_edit_comp_")
+    work = n.temp_dir("nwn_edit_comp_")
     try:
         for nm, src in rows:  # includes must resolve
             with open(os.path.join(work, nm + ".nss"), "wb") as fh:
@@ -1993,7 +1970,7 @@ def compiled_code(name, script):
                ok=info["ok"], problem=info["problem"], instructions=info["instructions"],
                strings=info["strings"][:200], listing=None, listing_error=None)
     s_ = settings()
-    tmpd = tempfile.mkdtemp(prefix="nwn_ncs_")
+    tmpd = n.temp_dir("nwn_ncs_")
     try:
         p = os.path.join(tmpd, script + ".ncs")
         with open(p, "wb") as fh:
@@ -2204,7 +2181,12 @@ def api_state(q):
     analyses = list_analyses()
     setup = nwn_setup.state(HERE)
     return dict(analyses=analyses, settings=s, workspace=WORKSPACE, jobs=jobs,
-                compiler_found=nwn_compile.find_compiler(s["compiler"] or None),
+                # NWN2 uses Skywing's NWNScriptCompiler.exe (shipped in tools/), NWN1 the nwn_script_comp of
+        # neverwinter.nim: look for both, so the Settings page stops calling a present compiler missing.
+        compiler_found=(nwn_compile.find_compiler(s["compiler"] or None)
+                        or nwn_compile.find_compiler(s["compiler"] or None, nwn2=True)),
+        compiler_kind=("nwn1" if nwn_compile.find_compiler(s["compiler"] or None) else
+                       ("nwn2" if nwn_compile.find_compiler(s["compiler"] or None, nwn2=True) else "")),
                 default_logs=nwn_logs.default_log_dirs(), default_nwn_root=found[0] if found else "",
                 version=VERSION, reanalyse=nwn_update.REANALYSE, work_format=nwn_update.WORK_FORMAT,
                 setup=setup,
@@ -2492,59 +2474,12 @@ def api_dupdiff(q):
     return dict(diffs=diffs or [], found=diffs is not None)
 
 
-def _name_key(stem):
-    """A module file name reduced for spotting renamed copies: lower case, date stamps (20261011, 2026-10-10,
-    2026_10_10) and everything but letters removed. '20261011_PW_Main' and 'PW_Main' both give 'pwmain';
-    'PW_Main_1a' gives 'pwmaina' (a different copy, not a rename)."""
-    s = re.sub(r"\d{4}[-_]?\d{2}[-_]?\d{2}", "", stem.lower())
-    return re.sub(r"[^a-z]", "", s)
-
-
-def _module_files(folder, limit=60):
-    """The .mod files in one folder, newest first: [dict(path, name, bytes, modified)]. Only lists the folder (never
-    opens a file); a folder that can't be read gives []."""
-    out = []
-    try:
-        with os.scandir(folder) as it:
-            for e in it:
-                if e.name.lower().endswith(".mod") and e.is_file(follow_symlinks=False):
-                    st_ = e.stat()
-                    out.append(dict(path=e.path, name=e.name, bytes=st_.st_size, mtime=st_.st_mtime))
-    except OSError:
-        return []
-    out.sort(key=lambda x: -x["mtime"])
-    for x in out:
-        x["modified"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(x.pop("mtime")))
-    return out[:limit]
-
-
-def renamed_candidates(pth, limit=5):
-    """For a module path that no longer exists: .mod files in the same folder whose name is the same apart from date
-    stamps and separators (_name_key), newest first - the likely renamed copy. [] when the folder is gone too.
-    Read-only (lists one folder)."""
-    stem = os.path.splitext(os.path.basename(os.path.normpath(pth)))[0]
-    key = _name_key(stem)
-    if not key:
-        return []
-    return [x for x in _module_files(os.path.dirname(os.path.normpath(pth)), limit=10000)
-            if _name_key(os.path.splitext(x["name"])[0]) == key][:limit]
-
-
 def api_diff_state(q):
-    """Compare modules page: saved snapshots, analyses to compare with (each with whether its module file is still
-    there), the .mod files in the analysed modules' folders (newest first, for the pick lists), and whether a last
-    result exists. Read-only: folders are listed, no module is opened."""
+    """Compare modules page: saved snapshots, analyses to compare with, and whether a last result exists."""
     import nwn_diff
-    ans = [dict(name=a_["name"], module_path=a_.get("module_path"),
-                exists=bool(a_.get("module_path")) and os.path.exists(a_["module_path"]))
-           for a_ in list_analyses() if not a_.get("incomplete") and not a_.get("archived")]
-    folders = []
-    for a_ in ans:
-        f = os.path.dirname(os.path.normpath(a_["module_path"])) if a_["module_path"] else ""
-        if f and os.path.isdir(f) and os.path.normcase(f) not in [os.path.normcase(x) for x in folders]:
-            folders.append(f)
-    files = [x for f in folders for x in _module_files(f)]
-    return dict(snapshots=nwn_diff.list_snapshots(WORKSPACE), analyses=ans, files=files,
+    return dict(snapshots=nwn_diff.list_snapshots(WORKSPACE),
+                analyses=[dict(name=a_["name"], module_path=a_.get("module_path")) for a_ in list_analyses()
+                          if not a_.get("incomplete") and not a_.get("archived")],
                 has_result=os.path.isfile(os.path.join(WORKSPACE, "_diffs", "last.json")))
 
 
@@ -2572,7 +2507,108 @@ def _refactor_history(q):
     return nwn_refactor.history(analysis_dir(q.get("a")))
 
 
+# ---------------------------------------------------------------- assistant page (nwn_assistant)
+# The API key lives in nwn_workspace/harness.json and is read only here, on the local server: the page never sees it
+# and the exported (static) report never contains it. Proposed writes are held in memory until the page confirms.
+
+def api_assistant(q):
+    """Assistant page: the config without the key, the pending changes, and whether the DeepSeek Harness answers."""
+    return dict(config=A.masked(), pending=A.pending_list(), harness=A.harness_status())
+
+
+def api_assistant_save(b):
+    """Save the assistant settings (key, model, base_url, workspace, harness address/command). Never returns the key."""
+    fields = ("api_key", "model", "base_url", "workspace", "harness_url", "harness_command", "system_extra",
+              "max_rounds", "max_file_kb")
+    patch = {k: b[k] for k in fields if k in b and b[k] is not None}
+    if "api_key" in patch and not str(patch["api_key"]).strip():
+        patch.pop("api_key")                       # an empty field means "keep the saved key"
+    return dict(config=A.masked(A.save(patch)))
+
+
+def api_assistant_test(b):
+    """Check the key against the API's model list (no tokens spent)."""
+    return A.test_key()
+
+
+def api_assistant_chat(b):
+    """One task: messages plus page context, run through the tool loop. Returns the answer, the call trace and the
+    ids of the writes it proposes (nothing is written here)."""
+    return A.chat(b.get("messages") or [], context=b.get("context") or "")
+
+
+def api_assistant_apply(b):
+    """Apply a proposed write (with a .bak beside it) or drop it. Path is re-checked against the workspace."""
+    return A.apply_pending(b.get("id"), discard=bool(b.get("discard")))
+
+
+def api_assistant_harness(b):
+    """Harness bridge: report its status, or start it detached (first run downloads the npm package)."""
+    if (b.get("action") or "status") == "start":
+        return A.harness_start()
+    return A.harness_status()
+
+
+
+def api_glossary(q):
+    """Glossary page card: the terms as editable "English = Русский" lines."""
+    import nwn_glossary
+    data = nwn_glossary.load()
+    return dict(text=nwn_glossary.terms_text(data), terms=len(data["terms"]),
+                rules=data["rules"], path=nwn_glossary.CONFIG)
+
+
+def api_glossary_save(b):
+    """Save the edited glossary (one term per line); returns the stored text and the count."""
+    import nwn_glossary
+    data = nwn_glossary.save({"terms": nwn_glossary.parse_terms(b.get("text") or "")})
+    return dict(text=nwn_glossary.terms_text(data), terms=len(data["terms"]),
+                rules=data["rules"], path=nwn_glossary.CONFIG)
+
+
+def api_glossary_check(b):
+    """Check one translated string against the glossary: markup, escapes, Latin, gender forms, terms."""
+    import nwn_glossary
+    return dict(problems=nwn_glossary.check(b.get("en") or "", b.get("ru") or "", where="строка"))
+
+
+def api_glossary_audit(b):
+    """Check a whole translated module against its English original: every dialogue node and journal entry."""
+    import nwn_glossary
+    en = (b.get("en") or "").strip().strip('"')
+    ru = (b.get("ru") or "").strip().strip('"')
+    if not en or not ru:
+        raise ValueError("укажите английский оригинал и переведённую сборку")
+    return nwn_glossary.audit_modules(en, ru)
+
+
+def api_localize(q):
+    """Localisation page: how much text the module has (journal, dialogues, scripts) and the share of Russian."""
+    import nwn_localize
+    return nwn_localize.stats(analysis_dir(q.get("a")))
+
+
+def api_campaign_convert(b):
+    """Campaign page: turn a stand-alone module into a campaign (the toolset's Campaign Editor steps).
+
+    Without apply=1 it only reports what it would do. With it, Campaigns/<name>/ is created, the module's journal is
+    moved there and module.ifo gets the campaign's Campaign_ID - with .bak copies of everything it rewrites."""
+    import nwn_tocampaign
+    module = (b.get("module") or "").strip().strip('"')
+    if not module:
+        raise ValueError("укажите путь к модулю (.mod или папку модуля)")
+    size = int(b.get("party_size") or 6)
+    return nwn_tocampaign.convert(module, dry_run=not b.get("apply"),
+                                  campaign_root=(b.get("root") or "").strip() or None,
+                                  name=(b.get("name") or "").strip() or None,
+                                  party_create=bool(b.get("party_create")), party_size=max(1, min(12, size)),
+                                  allow_unrestricted=bool(b.get("allow_unrestricted", True)),
+                                  lvl_cap=int(b.get("lvl_cap") or 20), xp_cap=int(b.get("xp_cap") or 253000))
+
 GET_ROUTES = {
+    "/api/glossary": api_glossary,
+    "/api/localize": api_localize,
+    "/api/assistant": api_assistant,
     "/api/state": api_state,
     "/api/detect_nwn_root": api_detect_nwn_root,
     "/api/ls": lambda q: list_dir(q.get("path", "")),                   # folder browser (see list_dir)
@@ -2608,8 +2644,6 @@ GET_ROUTES = {
     "/api/palette/moves": lambda q: nwn_palette.load_moves(analysis_dir(q.get("a"))),
     # Blueprints page: bulk field changes waiting for the next build (blueprint_changes.json; {} when none)
     "/api/bpchange/list": lambda q: nwn_bpchanges.load_changes(analysis_dir(q.get("a"))),
-    # Blueprints page, Placed item flags: items placed in areas with Stolen / Plot / Undroppable, vs their blueprint
-    "/api/itemflags": lambda q: item_flags_data(analysis_dir(q.get("a")), q.get("all") == "1"),
     "/api/edits": lambda q: nwn_edit.list_edits(analysis_dir(q.get("a"))),   # files in the edits overlay
     "/api/generator": api_generator,
     "/api/database": lambda q: database_view(q.get("a")),
@@ -2816,41 +2850,23 @@ def api_archive(b, unpack=False):
     return dict(job=jid)
 
 
-def _diff_problem(pth, which):
-    """Why a Compare modules path can't be used, as one plain sentence, or None when it can. which: "Older copy" /
-    "Newer copy". A missing file names likely renamed copies in the same folder (renamed_candidates). A snapshot
-    file (.json.gz) is accepted only from the toolkit's own _snapshots folder, so only snapshots the toolkit made are
-    ever read as snapshots."""
+def _diff_source(pth):
+    """pth if it exists; a snapshot file (.json.gz) is accepted only from the toolkit's own _snapshots folder, so
+    only snapshots the toolkit made are ever read as snapshots."""
     import nwn_diff
     pth = pth.strip()
-    if not pth:
-        return f"{which}: empty - pick a file from the list or paste a path."
-    if not os.path.exists(pth):
-        msg = f"{which} not found: {pth}. It may have been renamed, moved or archived since it was analysed."
-        cands = renamed_candidates(pth)
-        if cands:
-            msg += " In the same folder: " + "; ".join(f"{c['name']} ({c['modified']})" for c in cands) + "."
-        elif not os.path.isdir(os.path.dirname(os.path.normpath(pth))):
-            msg += " Its folder is not there either."
-        return msg
+    if not pth or not os.path.exists(pth):
+        raise ValueError(f"not found: {pth or '(empty)'}")
     snapdir = os.path.normcase(os.path.abspath(nwn_diff.snapshot_dir(WORKSPACE)))
     if pth.lower().endswith(".json.gz") and not os.path.normcase(os.path.abspath(pth)).startswith(snapdir + os.sep):
-        return f"{which}: snapshots are read only from the toolkit's _snapshots folder."
-    return None
-
-
-def _diff_source(pth, which="Module"):
-    """pth (stripped) if Compare modules can read it; ValueError with the reason (_diff_problem) otherwise."""
-    p = _diff_problem(pth, which)
-    if p:
-        raise ValueError(p)
-    return pth.strip()
+        raise ValueError("snapshots are read only from the toolkit's _snapshots folder")
+    return pth
 
 
 def api_diff_snapshot(b):
     """Compare modules: take a snapshot of a module, as a job under the key "_diff"."""
     import nwn_diff
-    mod_ = _diff_source(field(b, "module", str, ""), "Newer copy")
+    mod_ = _diff_source(field(b, "module", str, ""))
     label = str(b.get("label") or "")[:200]
 
     def job_fn(job):
@@ -2864,12 +2880,7 @@ def api_diff_compare(b):
     """Compare modules: compare two modules / snapshots as a job under the key "_diff"; the result goes to
     _diffs/last.json."""
     import nwn_diff
-    # both paths are checked before either is refused, so one message names every problem
-    probs = [p for p in (_diff_problem(field(b, "older", str, ""), "Older copy"),
-                         _diff_problem(field(b, "newer", str, ""), "Newer copy")) if p]
-    if probs:
-        raise ValueError(" ".join(probs))
-    older, newer = field(b, "older", str, "").strip(), field(b, "newer", str, "").strip()
+    older, newer = _diff_source(field(b, "older", str, "")), _diff_source(field(b, "newer", str, ""))
     an = field(b, "analysis", str, "") or None
     if an:
         analysis_dir(an)
@@ -3062,6 +3073,15 @@ def api_logs_stop(b):
 
 
 POST_ROUTES = {
+    "/api/glossary/save": api_glossary_save,
+    "/api/glossary/check": api_glossary_check,
+    "/api/glossary/audit": api_glossary_audit,
+    "/api/campaign/convert": api_campaign_convert,
+    "/api/assistant/config": api_assistant_save,
+    "/api/assistant/test": api_assistant_test,
+    "/api/assistant/chat": api_assistant_chat,
+    "/api/assistant/apply": api_assistant_apply,
+    "/api/assistant/harness": api_assistant_harness,
     "/api/twoda/check": api_twoda_check,
     "/api/twoda/save": lambda b: api_twoda_check(b, save=True),
     "/api/analyse": api_analyse,

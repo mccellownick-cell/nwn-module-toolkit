@@ -387,7 +387,7 @@ def build(out, hak_dir):
     scripts["trig_enter_d3"] = 'void main() { object oPC = GetEnteringObject(); }\n'
     scripts["quest_update_a"] = 'void main() { AddJournalQuestEntry("q_rats", 2, OBJECT_SELF); }\n'
     scripts["quest_update_b"] = 'void main() { AddJournalQuestEntry("q_arena", 2, OBJECT_SELF); }\n'
-    scripts["pw_seventeen_char"] = 'void main() { /* 17-char script name, over the 16-char ResRef limit */ }\n'
+    scripts["pw_a_script_name_that_is_longer_than_32"] = 'void main() { /* 39-char name, over NWN2\'s 32-char ResRef limit */ }\n'
     scripts["old_unused"] = '#include "old_lib"\nvoid main() { OldFunc(); }\n'
     scripts["old_lib"] = 'void OldFunc() { }\n'
     scripts["dyn_event"] = 'void main() { }\n'

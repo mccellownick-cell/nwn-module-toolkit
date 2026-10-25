@@ -149,6 +149,7 @@ def _instruction_starts(data):
 
 # ---------------------------------------------------------------------------------------------- source literals
 _STR = re.compile(r'"((?:\\.|[^"\\\n])*)"')               # a double-quoted NWScript string literal
+_INCLUDE_RE = re.compile(r'^[ \t]*#include[ \t]+"([^"]+)"', re.M)   # a #include line
 _ESC = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "'": "'", "0": "\0"}
 _IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 _DATE = re.compile(r"\d{4}-\d\d-\d\d")                    # what __DATE__ becomes: 2026-10-01
@@ -327,13 +328,23 @@ def check_module(db, module_path=None, nwscript_text="", nwn_root=None, live=Non
             if sources.get(name) is None:
                 continue                                  # compiled only: there is no source to compare with
 
-            # The script plus everything it includes, directly or through other includes.
+            # The script plus everything it includes, directly or through other includes. Includes that live in
+            # the base game are not in the index's edges, so their own #include lines are read from their text -
+            # otherwise a constant defined two includes deep (ginc_debug's PRETTY_LINE_COUNT_VAR, say) would look
+            # like text the source has lost.
             closure, todo = set(), [name]
             while todo:
                 x = todo.pop()
-                if x not in closure:
-                    closure.add(x)
-                    todo.extend(includes.get(x, ()))
+                if x in closure:
+                    continue
+                closure.add(x)
+                if x in includes:
+                    todo.extend(includes[x])
+                else:
+                    text = source_of(x)
+                    if text:
+                        todo.extend(m.group(1).strip().strip('"').lower()
+                                    for m in _INCLUDE_RE.finditer(text))
             texts = {x: source_of(x) for x in closure}
             if any(t is None for t in texts.values()):
                 stats["not_compared"] += 1

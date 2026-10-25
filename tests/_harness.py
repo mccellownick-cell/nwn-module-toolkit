@@ -46,18 +46,26 @@ for _p in (os.path.join(HERE, "scenarios"), HERE, ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+def _temp_dir(prefix, parent=None):
+    """A fresh writable temporary folder.
+
+    Not tempfile.mkdtemp: that creates the folder mode 0700, and on a locked-down Windows machine such a folder can
+    be unwritable even for the user who created it. os.makedirs with a unique name inherits the normal ACL."""
+    import uuid
+    root = parent or tempfile.gettempdir()
+    os.makedirs(root, exist_ok=True)
+    for _ in range(50):
+        d = os.path.join(root, f"{prefix}{uuid.uuid4().hex[:10]}")
+        try:
+            os.makedirs(d)
+            return d
+        except FileExistsError:
+            continue
+    return tempfile.mkdtemp(prefix=prefix, dir=parent)
+
+
 # ------------------------------------------------------------------------------------------------ isolation
-# A multiprocessing child (nwn_facts.grep runs its search in one) is started on Windows and macOS by re-importing the
-# test file, and so this module: it must reuse its parent's folder, not make one of its own - the grep time-limit test
-# kills that child, whose own atexit cleanup then never ran and its folder was left behind (seen on Windows).
-# NWN_TEST_SESSION = "<pid>|<folder>" of the process that made the folder. multiprocessing.parent_process() can't
-# tell: it is set only after the child has imported the test file. The parent's pid can: a suite started by
-# run_all.py (another process in between) still makes its own folder.
-_owner, _, _folder = os.environ.get("NWN_TEST_SESSION", "").partition("|")
-_CHILD = bool(_folder) and _owner == str(os.getppid())
-SESSION = _folder if _CHILD else tempfile.mkdtemp(prefix="nwn_test_")
-if not _CHILD:
-    os.environ["NWN_TEST_SESSION"] = f"{os.getpid()}|{SESSION}"     # inherited by multiprocessing children
+SESSION = _temp_dir("nwn_test_")
 WORKSPACE = os.path.join(SESSION, "ws")                  # not created: some checks prove nothing was written there
 NO_COMPILER = os.path.join(SESSION, "no_compiler", "nwn_script_comp")
 os.environ["NWN_WORKSPACE"] = WORKSPACE
@@ -67,16 +75,14 @@ TIMING = os.environ.get("NWN_TEST_TIMING") == "1"
 
 def _rmtree(path):
     """Remove a folder tree, retrying a few times: on Windows a file closed a moment ago (a child process, an SQLite
-    connection waiting for the garbage collector) can still be locked, and a deleted file stays "delete pending" (often
-    while antivirus scans it) so its folder can't be removed yet - an empty folder was left after a big suite. Retries
-    for about 10 s in all. Read-only files are made writable first."""
+    connection waiting for the garbage collector) can still be locked. Read-only files are made writable first."""
     def fix(func, p, _exc):
         try:
-            os.chmod(p, 0o700)
+            os.chmod(p, 0o777)      # 0700 makes a folder inaccessible on some Windows setups
             func(p)
         except OSError:
             pass
-    for attempt in range(10):
+    for attempt in range(5):
         if not os.path.exists(path):
             return
         gc.collect()                                      # closes connections nothing refers to any more
@@ -89,31 +95,29 @@ def _rmtree(path):
         time.sleep(0.2 * (attempt + 1))
 
 
-def _release_dashboard():
-    """Close what the dashboard still holds open on the test workspace's analyses (its caches keep sqlite connections
-    for the life of the process). Without this, Windows refuses to delete those index.sqlite files at exit and the
-    suite is reported as leaving temporary files. Does nothing when no test imported the dashboard."""
-    dash = sys.modules.get("nwn_dashboard")
-    if dash is None:
-        return
-    for cache in list(getattr(dash, "ANALYSIS_CACHES", [])):
-        for key in list(cache.items):
-            try:
-                cache.drop(key[0] if isinstance(key, tuple) else key)
-            except Exception:  # noqa - best effort at exit; _rmtree still runs
-                pass
+atexit.register(_rmtree, SESSION)
+
+def _close_leftover_sqlite():
+    """Close every SQLite connection still alive, so the session folder can be deleted on Windows."""
+    import gc
+    import sqlite3
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, sqlite3.Connection):
+                obj.close()
+        except Exception:  # noqa
+            pass
 
 
-if not _CHILD:                              # only the process that made the folder removes it
-    atexit.register(_rmtree, SESSION)
-atexit.register(_release_dashboard)        # registered last, so it runs first (atexit is last in, first out)
+atexit.register(_close_leftover_sqlite)
+
 
 
 @contextlib.contextmanager
 def tempdir(prefix="nwn_t_"):
     """A new temporary folder (inside this run's folder) that is removed when the block ends, whatever happens in
     it. Yields its path."""
-    d = tempfile.mkdtemp(prefix=prefix, dir=SESSION)
+    d = _temp_dir(prefix, SESSION)
     try:
         yield d
     finally:

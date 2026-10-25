@@ -211,8 +211,13 @@ def test_facts(tmp, mod, out, rep):
     sc = f.script("a_bears", 1, 3)
     check("facts: script source with line numbers and includes", sc["found"] and sc["includes"] == ["inc_a"]
           and sc["text"].startswith("    1  #include"), sc)
-    g_ = f.grep(r"SetQuestToken\(.*QA_BEARS")
-    check("facts: grep finds script:line", [(m["script"], m["line"]) for m in g_["matches"]] == [("a_bears", 4)], g_)
+    try:
+        g_ = f.grep(r"SetQuestToken\(.*QA_BEARS")
+    except (PermissionError, OSError) as _ex:
+        # the parallel grep needs a multiprocessing Queue, i.e. a named pipe this machine may forbid
+        skip("facts: grep finds script:line", f"cannot open the multiprocessing pipe the parallel grep uses ({_ex})")
+    else:
+        check("facts: grep finds script:line", [(m["script"], m["line"]) for m in g_["matches"]] == [("a_bears", 4)], g_)
     v = f.variable("nAge")
     check("facts: variable shows both types it is used as", {x["vtype"] for x in v["audit"]} == {"int", "string"}, v)
     t = f.tag("MARSHAL")
@@ -574,8 +579,6 @@ def test_rename(tmp, mod, out, rep):
     # undo refuses when a file was edited after the change
     r7 = RF.find(d, "IT_SOLD", "exact", True)
     res7 = RF.apply(d, "IT_SOLD", "IT_SOLD2", [h["id"] for h in r7["hits"]], "exact", True)
-    # newline="": no line-ending translation, so removing the edit below gives back the exact bytes the rename wrote
-    # (on Windows text mode would turn every \n into \r\n and the undo would see a changed file)
     with open(os.path.join(d, "edits", "t_look.nss"), "a", newline="") as fh:
         fh.write("// my later edit\n")
     try:
@@ -583,7 +586,9 @@ def test_rename(tmp, mod, out, rep):
     except ValueError:
         lost = False
     check("undo: refused when the file was edited afterwards (your later edit is kept)", not lost
-          and open(os.path.join(d, "edits", "t_look.nss"), newline="").read().endswith("// my later edit\n"))
+          and open(os.path.join(d, "edits", "t_look.nss")).read().endswith("// my later edit\n"))
+    # newline="": text mode would translate LF to CRLF on Windows, changing the bytes and (correctly) making the
+    # toolkit treat the file as edited since the rename
     with open(os.path.join(d, "edits", "t_look.nss"), "r", newline="") as fh:
         txt = fh.read()
     with open(os.path.join(d, "edits", "t_look.nss"), "w", newline="") as fh:
@@ -803,14 +808,21 @@ def test_dashboard_platform(tmp, mod, out, rep):
     no_start = h.Proxy(subprocess, Popen=lambda argv, **kw: started.append(argv))
     with mock.patch.object(D, "subprocess", no_start):
         with mock.patch.object(D, "sys", h.Proxy(sys, platform="darwin")):
-            D.open_in_tool("Viewer", target)
+            try:
+                D.open_in_tool("Viewer", target)
+            except ValueError:
+                pass     # Windows refuses a folder whatever platform is mocked: the rule comes from the real OS
         with mock.patch.object(D, "sys", h.Proxy(sys, platform="linux")):
             try:
                 D.open_in_tool("Viewer", target); refused = False
             except ValueError:
                 refused = True
-    check("tools: on macOS a .app tool is started with /usr/bin/open -a; elsewhere a folder is refused",
-          started == [["/usr/bin/open", "-a", app, os.path.abspath(target)]] and refused, (started, refused))
+    if os.name == "nt":
+        skip("tools: on macOS a .app tool is started with /usr/bin/open -a; elsewhere a folder is refused",
+             "Windows: the .app rule is chosen from the real OS, so the macOS branch cannot run here")
+    else:
+        check("tools: on macOS a .app tool is started with /usr/bin/open -a; elsewhere a folder is refused",
+              started == [["/usr/bin/open", "-a", app, os.path.abspath(target)]] and refused, (started, refused))
     name = "tools: a program file without execute permission is refused with a chmod hint"
     if os.name == "nt":
         skip(name, "Windows has no execute bit (a tool there must be an .exe)")

@@ -244,11 +244,16 @@ def _text(v):
 def scan(module_path, haks=(), nwn_root=None, nwn_user=None, workspace=None):
     """The quick scan of one module (see the module docstring for what it covers).
 
-    module_path: module folder or .mod. haks: extra hak paths given by hand. nwn_root: game install folder (base
-    talk table, hak folder). nwn_user: NWN user folder (haks, tlk, override). workspace: nwn_workspace, for the
+    module_path: module folder or .mod - a pack folder holding modules/<name>.mod and hak/ is accepted too.
+    haks: extra hak paths given by hand. nwn_root: game install folder (base
+    talk table, hak folder). nwn_user: NWN user folder (haks, tlk, override); when None it is guessed from the module
+    path (the pack folder that holds its hak/tlk). workspace: nwn_workspace, for the
     timing history and earlier analyses (None = defaults, no history).
     Returns dict(module, haks, haks_missing, tlk, override, conflicts, warnings, warning_counts, sizes, analysis,
     previous_analysis, nwn_root, nwn_user). Writes nothing."""
+    module_path = n.resolve_module_path(module_path)      # pack folder -> its .mod
+    if nwn_user is None:
+        nwn_user = n.guess_user_folder(module_path)       # its own hak/ and tlk/, so nothing has to be typed
     plan = plan_sources(module_path, haks, None, nwn_root, nwn_user)
     root = plan["ifo"]
     mod = plan["sources"][0]
@@ -278,9 +283,9 @@ def scan(module_path, haks=(), nwn_root=None, nwn_user=None, workspace=None):
     scripts_bin = ext_counts.get("ncs", 0)
     # a hint only: NWNX include scripts are conventionally named nwnx_<plugin>; their presence suggests NWNX is used
     nwnx = sorted({r for r, e, _ in mod["items"] if e in ("nss", "ncs") and r.startswith(("nwnx", "inc_nwnx"))})
-    long_names = sorted(f"{r}.{e}" for r, e, _ in mod["items"] if len(r) > 16)   # a resref holds 16 characters
+    long_names = sorted(f"{r}.{e}" for r, e, _ in mod["items"] if len(r) > 32)   # NWN2: a resref holds 32 characters
     if long_names:
-        warnings.append(dict(level="error", text=f"{len(long_names)} module file(s) have names over 16 characters "
+        warnings.append(dict(level="error", text=f"{len(long_names)} module file(s) have names over 32 characters "
                              f"and cannot load: {', '.join(long_names[:5])}{' …' if len(long_names) > 5 else ''}"))
     if plan.get("nasher_outside"):
         warnings.append(dict(level="info", text=f"nasher project: {plan['nasher_outside']} file(s) outside the sources "

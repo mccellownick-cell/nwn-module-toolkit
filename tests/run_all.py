@@ -42,11 +42,25 @@ def suites():
     return (["run_tests.py"] if os.path.isfile(os.path.join(HERE, "run_tests.py")) else []) + found
 
 
+def _temp_dir(prefix, parent=None):
+    """A fresh writable temporary folder (see _harness._temp_dir for why not tempfile.mkdtemp)."""
+    import uuid
+    root = parent or tempfile.gettempdir()
+    os.makedirs(root, exist_ok=True)
+    for _ in range(50):
+        d = os.path.join(root, f"{prefix}{uuid.uuid4().hex[:10]}")
+        try:
+            os.makedirs(d)
+            return d
+        except FileExistsError:
+            continue
+    return tempfile.mkdtemp(prefix=prefix, dir=parent)
+
 def run_suite(fn, timing, timeout):
     """Run one suite file in its own process. Returns a dict: name, ok, passed, total, skips [lines], fails [lines],
     seconds, note (why it failed), tail (the end of its output, for a failure)."""
     name = fn[:-3]
-    box = tempfile.mkdtemp(prefix=f"nwn_runall_{name}_")
+    box = _temp_dir(f"nwn_runall_{name}_")
     tmp, ws = os.path.join(box, "tmp"), os.path.join(box, "ws")
     os.makedirs(tmp)
     env = dict(os.environ, NWN_WORKSPACE=ws, NWN_SCRIPT_COMP=os.path.join(box, "no_compiler", "nwn_script_comp"),

@@ -70,13 +70,13 @@ def dave(tmp, root):
     sc = {s["name"]: s for s in rep["scripts"]}
     ls = [s for s in rep["scripts"] if s["details"] and any("[Place:" in d for d in s["details"])]
     check("dave: Lilac Soul placement hint captured", ls, [s["name"] for s in rep["scripts"]][:5])
-    check("dave: 17-char script name flagged", any(c == "name_too_long" for c, _ in iss))
+    check("dave: script name over 32 chars flagged", any(c == "name_too_long" for c, _ in iss))
     plan = {"delete": [d["node"] for d in rep["deletions"] if d["status"] != "Review"],
             "merge": [g["id"] for g in rep["duplicates"] if g["mergeable"]]}
     log = nwn_build.build(out, plan, verbose=False, audit_kwargs=NO_COMP)
     bad = [c for c in log["audit"]["checks"] if c["status"] not in ("PASS", "SKIPPED")]
-    # the 17-char name blocks the .mod on purpose; everything else must pass
-    check("dave: audit passes with haks carried through (only .mod blocked by 17-char name)",
+    # the over-long name blocks the .mod on purpose; everything else must pass
+    check("dave: audit passes with haks carried through (only .mod blocked by the over-long name)",
           [c["id"] for c in bad] == ["mod"], bad)
 
 
@@ -127,7 +127,7 @@ def edit_flow(tmp, root):
     j["Cost"]["value"] = 999
     nwn_edit.save_gff_json(out, "potion.uti", json.dumps(j))
     try:
-        nwn_edit.save_gff_json(out, "potion.uti", json.dumps({**j, "TemplateResRef": {"type": "resref", "value": "x" * 20}}))
+        nwn_edit.save_gff_json(out, "potion.uti", json.dumps({**j, "TemplateResRef": {"type": "resref", "value": "x" * 33}}))
         check("edit: over-long resref rejected", False)
     except Exception:
         check("edit: over-long resref rejected", True)

@@ -207,7 +207,7 @@ def editors_core():
         built = False
     check("rebuild refused while there are errors", not built)
     he.undo(pid, ["appearance.2da"])
-    for bad_name in ("this_is_far_too_long.tga", "bad name.tga", "x.qqq", "noext"):
+    for bad_name in ("this_is_a_far_too_long_resref_name.tga", "bad name.tga", "x.qqq", "noext"):
         try:
             he.put(pid, bad_name, b"x"); ok = False
         except ValueError:

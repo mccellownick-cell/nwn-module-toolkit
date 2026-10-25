@@ -1,12 +1,12 @@
 """
-nwn_bpchanges.py - bulk blueprint changes: faction, name, tag, description and item flags, waiting for the next build.
+nwn_bpchanges.py - bulk blueprint changes: faction, name, tag and description, waiting for the next build.
 
 Why this exists
 ---------------
 Re-factioning a hundred creatures or renaming a family of items one by one in the toolset is slow. On the Blueprints
 page the builder ticks blueprints (or fills new_* columns in a spreadsheet) and the changes wait in
 <analysis>/blueprint_changes.json:
-    {"version": 1, "changes": {ext: {resref: {field: {"to": value, "from": value, "copies"?: "all"}}}}}
+    {"version": 1, "changes": {ext: {resref: {field: {"to": value, "from": value}}}}}
 The next Build & audit applies them (nwn_build) to the blueprint and to every placed copy in the areas that still holds
 the blueprint's old value - placed objects are full copies, so a copy the builder gave its own name keeps it - and the
 audit proves that only those fields changed (nwn_audit). Nothing changes before the build.
@@ -19,10 +19,6 @@ What can change (FIELDS), and what is refused (plan_values / plan_csv)
              item's tag-based script is named after it (renaming would break them - Find & replace renames those
              everywhere instead), and when scripts already look the NEW tag up (they would find this object too).
     faction  creatures only; a faction of the module's repute.fac, by name (any case) or number.
-    stolen / plot / undroppable   items only, yes or no (the item's Stolen, Plot and Cursed fields; Cursed is what
-             the toolset and NWScript call cursed: the item can't be dropped). For these three, "all placed copies"
-             (copies="all") also sets placed copies that hold their own value - an audit of flags usually wants every
-             copy the same; names, tags and descriptions always keep a copy's own value.
 Also refused: blueprints whose copy in a hak wins (the game loads the hak's), unknown blueprints / types / fields, and
 spreadsheet rows that disagree about one blueprint's field (nothing is guessed).
 
@@ -45,7 +41,7 @@ import nwnlib as n
 # waypoints LocalizedName.
 FIELDS = {
     "uti": {"name": "LocalizedName", "description": "DescIdentified", "unidentified_description": "Description",
-            "tag": "Tag", "stolen": "Stolen", "plot": "Plot", "undroppable": "Cursed"},
+            "tag": "Tag"},
     "utc": {"first_name": "FirstName", "last_name": "LastName", "description": "Description", "tag": "Tag",
             "faction": "FactionID"},
     "utp": {"name": "LocName", "description": "Description", "tag": "Tag"},
@@ -57,11 +53,7 @@ FIELDS = {
     "utw": {"name": "LocalizedName", "description": "Description", "tag": "Tag"},
 }
 TEXT_FIELDS = {"name", "first_name", "last_name", "description", "unidentified_description"}
-# item flags: a byte, 1 = set; shown and typed as yes / no
-FLAG_FIELDS = {"stolen", "plot", "undroppable"}
-ALL_FIELDS = ["name", "first_name", "last_name", "tag", "description", "unidentified_description", "faction",
-              "stolen", "plot", "undroppable"]
-YES, NO = {"yes", "y", "1", "true", "on", "set"}, {"no", "n", "0", "false", "off", "clear", "unset"}
+ALL_FIELDS = ["name", "first_name", "last_name", "tag", "description", "unidentified_description", "faction"]
 TAG_MAX = 32                     # the toolset's limit for a tag
 CHANGES_FILE = "blueprint_changes.json"
 CLASS = {"uti": "item", "utc": "creature", "utp": "placeable", "utd": "door", "ute": "encounter", "utm": "store",
@@ -85,8 +77,7 @@ def load_context(analysis, pal=None):
         for rr, ext, lab, val in db.execute(q, (*labels, *FIELDS)):
             for field, l2 in FIELDS[ext].items():
                 if l2 == lab:
-                    values.setdefault((ext, (rr or "").lower()), {})[field] = (
-                        _flag_text(val) if field in FLAG_FIELDS else "" if val is None else str(val))
+                    values.setdefault((ext, (rr or "").lower()), {})[field] = "" if val is None else str(val)
         placed = {}
         cls_ext = {c: e for e, c in CLASS.items()}
         for tpl, cls, cnt in db.execute("SELECT lower(template), class, count(*) FROM objects WHERE is_blueprint=0 "
@@ -114,20 +105,6 @@ def load_context(analysis, pal=None):
     return dict(pal=pal, values=values, placed=placed, used_tags=used, factions=factions)
 
 
-def _flag_text(v):
-    """A stored flag byte as the page shows it: "yes" when set, else "no" (a missing field is "no", as in the game)."""
-    try:
-        return "yes" if int(v or 0) else "no"
-    except (TypeError, ValueError):
-        return "no"
-
-
-def flag_value(text):
-    """'yes' / 'no' for a typed flag value (yes/no, 1/0, true/false, on/off, set/clear; any case), else None."""
-    t = str(text).strip().lower()
-    return "yes" if t in YES else "no" if t in NO else None
-
-
 def _faction(ctx, text):
     """(number, None) for a faction given by name (any case) or number; (None, why) otherwise."""
     t = str(text).strip()
@@ -152,13 +129,9 @@ def _check(ctx, ext, rr, field, text):
     b, why = nwn_palette._blocked(ctx["pal"], ext, rr)
     if why:
         return None, why
-    cur = ctx["values"].get((ext, rr), {}).get(field, "no" if field in FLAG_FIELDS else "")
+    cur = ctx["values"].get((ext, rr), {}).get(field, "")
     to, note = str(text).strip(), ""
-    if field in FLAG_FIELDS:
-        to = flag_value(to)
-        if to is None:
-            return None, f"{field}: '{str(text).strip()[:20]}' - use yes or no"
-    elif field == "faction":
+    if field == "faction":
         to, why = _faction(ctx, to)
         if why:
             return None, why
@@ -181,20 +154,17 @@ def _check(ctx, ext, rr, field, text):
                 **{"from": cur}, to=to, placed=ctx["placed"].get((ext, rr), 0), note=note), None
 
 
-def plan_values(ctx, ext, resrefs, values, all_copies=False):
+def plan_values(ctx, ext, resrefs, values):
     """The Change fields… dialog: the same new values for every ticked blueprint of one type.
 
-    values: {field: text}; an empty text leaves that field alone. all_copies: item flags also go to placed copies that
-    hold their own value (each flag change gets copies="all"; other fields ignore it). A flag already so on the
-    blueprint still counts as a change with all_copies, since copies may differ. Returns dict(changes, refused
-    [{item "ext:resref", why}], unchanged) - a preview; nothing is stored (save_plan does that)."""
+    values: {field: text}; an empty text leaves that field alone. Returns dict(changes, refused [{item "ext:resref",
+    why}], unchanged) - a preview; nothing is stored (save_plan does that)."""
     out = dict(changes=[], refused=[], unchanged=0)
     vals = {f: v for f, v in (values or {}).items() if str(v if v is not None else "").strip()}
     for rr in resrefs:
         rr = str(rr).lower()
         for field, text in vals.items():
             c, why = _check(ctx, ext, rr, field, text)
-            c = _all_copies(ctx, ext, rr, field, c, all_copies)
             if why:
                 if not any(r["item"] == f"{ext}:{rr}" and r["why"] == why for r in out["refused"]):
                     out["refused"].append(dict(item=f"{ext}:{rr}", why=why))
@@ -203,20 +173,6 @@ def plan_values(ctx, ext, resrefs, values, all_copies=False):
             else:
                 out["changes"].append(c)
     return out
-
-
-def _all_copies(ctx, ext, rr, field, c, all_copies):
-    """A planned change with copies="all" when asked for and the field is an item flag. A flag the blueprint already
-    has still becomes a change then (its placed copies may differ). Other results are returned as they are."""
-    if not all_copies or field not in FLAG_FIELDS or c is None:
-        return c
-    if c == "same":
-        import nwn_palette
-        b, _why = nwn_palette._blocked(ctx["pal"], ext, rr)
-        cur = ctx["values"].get((ext, rr), {}).get(field, "no")
-        c = dict(ext=ext, type=ctx["pal"]["types"][ext]["label"], resref=rr, name=b["name"], field=field,
-                 label=FIELDS[ext][field], **{"from": cur}, to=cur, placed=ctx["placed"].get((ext, rr), 0), note="")
-    return dict(c, copies="all")
 
 
 def plan_csv(ctx, data):
@@ -228,8 +184,6 @@ def plan_csv(ctx, data):
     import nwn_palette
     rows = nwn_csvio.read_upload(data, required=("type", "resref"))
     cols = [f for f in ALL_FIELDS if rows and f"new_{f}" in rows[0]]
-    # all_copies = yes on a row: its new_stolen / new_plot / new_undroppable also go to placed copies with their own value
-    allc = {}
     out = dict(rows=len(rows), changes=[], refused=[], unchanged=0, duplicates=0)
     per = {}
     for r in rows:
@@ -242,16 +196,8 @@ def plan_csv(ctx, data):
             if ext is None:
                 out["refused"].append(dict(row=r["_row"], item=rr, why=f"unknown type '{nwn_csvio.uncell(r['type'])}'"))
                 break
-            if f in FLAG_FIELDS:
-                v = flag_value(v) or v       # yes / Yes / 1 are one value; a bad value is refused by _check
-                allc.setdefault((ext, rr, f), set()).add(flag_value(nwn_csvio.uncell(r.get("all_copies", ""))) == "yes")
             per.setdefault((ext, rr, f), []).append((r["_row"], v))
     for (ext, rr, f), lst in per.items():
-        if len(allc.get((ext, rr, f), ())) > 1:
-            where = ", ".join(str(r_) for r_, _v in lst)
-            out["refused"] += [dict(row=r_, item=f"{ext}:{rr}", why=f"rows {where} disagree about all_copies")
-                               for r_, _v in lst]
-            continue
         if len({v for _r, v in lst}) > 1:
             where = ", ".join(str(r_) for r_, _v in lst)
             out["refused"] += [dict(row=r_, item=f"{ext}:{rr}", why=f"rows {where} give different new_{f} values")
@@ -259,7 +205,6 @@ def plan_csv(ctx, data):
             continue
         out["duplicates"] += len(lst) - 1
         c, why = _check(ctx, ext, rr, f, lst[0][1])
-        c = _all_copies(ctx, ext, rr, f, c, True in allc.get((ext, rr, f), ()))
         if why:
             out["refused"].append(dict(row=lst[0][0], item=f"{ext}:{rr}", why=why))
         elif c == "same":
@@ -299,8 +244,7 @@ def save_plan(analysis, plan):
     waiting changes. Writes only blueprint_changes.json."""
     ch = load_changes(analysis)
     for c in plan["changes"]:
-        ch.setdefault(c["ext"], {}).setdefault(c["resref"], {})[c["field"]] = dict(
-            {"to": c["to"], "from": c["from"]}, **({"copies": "all"} if c.get("copies") == "all" else {}))
+        ch.setdefault(c["ext"], {}).setdefault(c["resref"], {})[c["field"]] = {"to": c["to"], "from": c["from"]}
     return _save(analysis, ch)
 
 
@@ -326,12 +270,7 @@ def undo_changes(analysis, ext=None, resrefs=None, field=None):
 
 def new_value(field, to):
     """The GFF value a change writes: a localised text (English, no talk-table reference) for text fields, the text
-    for a tag, the number for a faction, 1 / 0 for an item flag (yes / no)."""
-    if field in FLAG_FIELDS:
-        v = flag_value(to)
-        if v is None:                    # never guess: a hand-edited "maybe" must not quietly clear the flag
-            raise ValueError(f"'{to}' is not yes or no")
-        return 1 if v == "yes" else 0
+    for a tag, the number for a faction."""
     if field in TEXT_FIELDS:
         return n.LocString(strref=n.BAD_STRREF, entries={0: str(to)})
     return int(to) if field == "faction" else str(to)

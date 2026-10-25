@@ -140,15 +140,17 @@ def split_name(fn):
     return (base.lower(), ext.lower()) if dot else (ext.lower(), "")    # no dot: rpartition puts the name in ext
 
 
-def name_problem(fn):
-    """Plain-words reason a file name can't go into a hak, or None. Pure function; never raises."""
+def name_problem(fn, limit=32):
+    """Plain-words reason a file name can't go into a hak, or None. Pure function; never raises.
+
+    limit: characters allowed in the resref - 32 for an NWN2 hak (ERF V1.1), 16 for an NWN1 one."""
     base, ext = split_name(fn)
     if not ext:
         return "has no file extension"
     if ext not in n.EXT_TO_RESTYPE:                 # an ERF entry stores a numeric resource type, not the extension
         return f"'.{ext}' is not a file type NWN can load from a hak"
-    if len(base) > 16:                              # the ERF key's name field is 16 bytes
-        return f"the name is {len(base)} characters - NWN resource names are limited to 16"
+    if len(base) > limit:                           # the ERF key's name field: 32 bytes in NWN2, 16 in NWN1
+        return f"the name is {len(base)} characters - resource names are limited to {limit}"
     # safe_resref: no path characters or Windows device names; the regex also refuses anything but a-z 0-9 _ -
     if not n.safe_resref(base) or re.search(r"[^a-z0-9_\-]", base):
         return "the name has characters NWN can't load (use letters, digits, _ and -)"
@@ -901,8 +903,10 @@ class HakEditor:
                     last[0] = time.time()
                     log(f"  {i}/{total} files written")
             # written as .tmp and renamed only when complete, so a half-written hak never carries the final name
+            # rebuild in the same family as the hak being edited (NWN2 = ERF V1.1 with 40-byte key entries)
             shas = n.write_erf_stream(out + ".tmp", entries, proj.get("file_type") or "HAK ", lcount, lbytes, prog,
-                                      strref=erf.strref)
+                                      strref=erf.strref,
+                                      version="V1.1" if n.is_nwn2_archive(proj["source"]) else "V1.0")
             os.replace(out + ".tmp", out)
         finally:
             erf.close()

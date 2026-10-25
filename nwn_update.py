@@ -70,8 +70,7 @@ def workspace_dir(here=HERE):
 # Bump WORK_FORMAT whenever a version adds a new kind of saved work that a build applies, or extends an existing one
 # (a new field in blueprint_changes.json...). Every function that saves such work calls claim_work() first.
 #   1 = toolkit 1.5.0: palette_moves.json (palette moves) and blueprint_changes.json (name/tag/description/faction)
-#   2 = toolkit 1.5.4: blueprint_changes.json item flags (stolen / plot / undroppable) and "copies": "all"
-WORK_FORMAT = 2
+WORK_FORMAT = 1
 WORK_FILE = "toolkit.json"          # <analysis>/toolkit.json: {"work_format", "saved_with", "saved_at"}
 
 # --- (b) what analysing again adds --------------------------------------------------------------------------
@@ -98,10 +97,6 @@ REANALYSE = [
     # Issues page (nwn_minimap.map_checks); the Map page itself draws from the index and needs no re-analysis
     dict(key="map_checks", since="1.5.3",
          what="Area transition checks, missing minimap images and areas set to Underground by mistake on the Issues page"),
-    # missing_bp_notes 1: a missing blueprint's detail counts its placed copies and names where else the file is (the
-    # toolset's temp0, an unlisted hak, the development folder: nwn_index.find_missing_elsewhere); toolset_unsaved
-    dict(key="missing_bp_notes", since="1.5.5",
-         what="Missing blueprints say when placed copies exist and where else the file is; a warning for unsaved toolset work"),
 ]
 
 # --- (a) bringing work across -------------------------------------------------------------------------------

@@ -1,0 +1,36 @@
+﻿# analysis results and user data - never publish these
+nwn_workspace/
+wn_workspace/
+_nwn2_toolkit/
+backup_*/
+*.bak
+*.sqlite
+*.sqlite-journal
+*.log
+index.sqlite
+files.csv
+*.hak
+*.mod
+*.exe
+*.tga
+
+# secrets - never commit
+harness.json
+.env
+.env.*
+*.key
+credentials.json
+secrets.json
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# editors / os
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

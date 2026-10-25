@@ -486,15 +486,126 @@ const has = (q, ...vals) => !q || vals.some(v => String(v ?? "").toLowerCase().i
 const NAV = [
   ["Start", [["home","Modules"],["housekeep","Modules folder"],["compare","Compare modules"],["help","Help / manual"]]],
   ["Analysis", [["overview","Overview"],["issues","Issues"],["scripts","Scripts"],["items","Items"],["blueprints","Blueprints"],["duplicates","Duplicates"],
-                ["hierarchy","Hierarchy"],["areas","Areas"],["map","Map"],["conversations","Conversations"],["quests","Quest health"],["factions","Factions"],["database","Database"],
+                ["hierarchy","Hierarchy"],["areas","Areas"],["map","Map"],["conversations","Conversations"],["localize","Локализация"],["quests","Quest health"],["factions","Factions"],["database","Database"],
                 ["vars","Variables & tags"],["perf","Performance"],["orphans","Orphans"],["skins","Skins & hides"],["catalog","Hak catalogue"],
                 ["impact","Impact explorer"],["files","All files"]]],
   ["Edit", [["find","Find & replace"],["generator","Script generator"],["edits","My edits"],["haks","Hak editor"]]],
   ["Clean up", [["delete","Safe to delete"],["build","Build & audit"]]],
-  ["Runtime", [["logs","Log monitor"]]],
+  ["Runtime", [["logs","Log monitor"],["assistant","Ассистент (AI)"]]],
 ];
+// ---------------------------------------------------------------- language
+// The interface is bilingual. English is the source language: every label below is
+// written in English and translated to Russian here. Labels that were authored in
+// Russian are translated the other way round. Anything missing falls back to the source.
+const I18N_RU = {
+  "Start": "Старт", "Modules": "Модули", "Modules folder": "Папка модулей",
+  "Compare modules": "Сравнить модули", "Help / manual": "Справка / руководство",
+  "Analysis": "Анализ", "Overview": "Обзор", "Issues": "Проблемы", "Scripts": "Скрипты",
+  "Items": "Предметы", "Blueprints": "Блюпринты", "Duplicates": "Дубликаты",
+  "Hierarchy": "Иерархия", "Areas": "Локации", "Map": "Карта", "Conversations": "Диалоги",
+  "Quest health": "Состояние квестов", "Factions": "Фракции", "Database": "База данных",
+  "Variables & tags": "Переменные и теги", "Performance": "Производительность",
+  "Orphans": "Сироты", "Skins & hides": "Шкуры и шкуры", "Hak catalogue": "Каталог хаков",
+  "Impact explorer": "Анализ влияния", "All files": "Все файлы",
+  "Edit": "Правка", "Find & replace": "Поиск и замена", "Script generator": "Генератор скриптов",
+  "My edits": "Мои правки", "Hak editor": "Редактор хаков",
+  "Clean up": "Чистка", "Safe to delete": "Безопасно удалить", "Build & audit": "Сборка и аудит",
+  "Runtime": "Работа", "Log monitor": "Монитор лога",
+  "Version: ": "Версия: ", "Language": "Язык"
+};
+// Common interface words. They are matched as whole text nodes, so a label only
+// translates when it stands alone (a button, a table header, a menu entry).
+Object.assign(I18N_RU, {
+  "Refresh": "Обновить", "Reload": "Перезагрузить", "Open": "Открыть", "Close": "Закрыть",
+  "Save": "Сохранить", "Cancel": "Отмена", "Apply": "Применить", "Reset": "Сбросить",
+  "Search": "Поиск", "Filter": "Фильтр", "Export": "Экспорт", "Copy": "Копировать",
+  "Run": "Запустить", "Help": "Справка", "Details": "Подробности", "Status": "Статус",
+  "Name": "Имя", "Value": "Значение", "Count": "Количество", "All": "Все", "None": "Нет",
+  "Yes": "Да", "No": "Нет", "Loading…": "Загрузка…", "Error": "Ошибка", "Warning": "Предупреждение",
+  "Info": "Информация", "Add": "Добавить", "Delete": "Удалить", "Edit": "Изменить",
+  "Back": "Назад", "Next": "Далее", "Table": "Таблица", "Row": "Строка", "Column": "Столбец",
+  "Module": "Модуль", "Campaign": "Кампания", "Area": "Локация", "Creature": "Существо",
+  "Item": "Предмет", "Script": "Скрипт", "Journal": "Журнал", "Dialog": "Диалог",
+  "Total": "Всего", "Type": "Тип", "Size": "Размер", "Path": "Путь", "Tag": "Тег",
+  "Severity": "Важность", "Message": "Сообщение", "Source": "Источник", "Target": "Цель",
+  "Translate": "Перевести", "Translated": "Переведено", "Missing": "Отсутствует",
+  "Save report": "Сохранить отчёт", "Open folder": "Открыть папку", "Select module": "Выберите модуль",
+  "Open DeepSeek Chat": "Открыть DeepSeek Chat",
+  "This chat is the unlimited web version: it opens in a new tab, because the site cannot be embedded in a frame.":
+    "Это безлимитный веб-чат: он открывается в новой вкладке, потому что сайт запрещает встраивание в рамку."
+});
+const I18N_EN = {
+  "Локализация": "Localisation", "Ассистент (AI)": "Assistant (AI)"
+};
+let LANG = (() => { try { return localStorage.getItem("dsh_lang") || "en"; } catch (e) { return "en"; } })();
+// The Assistant page offers the regular (unlimited) DeepSeek web chat next to the API assistant.
+// A frame is impossible (the site sends X-Frame-Options), so it is a plain link in a new tab.
+function placeDeepSeekLink(){
+  try {
+    if (typeof S === "undefined" || S.view !== "assistant") return;
+    const main = document.getElementById("main");
+    if (!main || document.getElementById("dsChatLink")) return;
+    const box = document.createElement("div");
+    box.id = "dsChatLink";
+    box.className = "card";
+    box.style.marginTop = "14px";
+    const note = document.createElement("p");
+    note.className = "small muted";
+    note.style.margin = "0 0 8px";
+    note.textContent = t("This chat is the unlimited web version: it opens in a new tab, because the site cannot be embedded in a frame.");
+    const link = document.createElement("a");
+    link.href = "https://chat.deepseek.com/";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = t("Open DeepSeek Chat");
+    link.style.cssText = "display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:6px;text-decoration:none";
+    box.appendChild(note);
+    box.appendChild(link);
+    main.appendChild(box);
+  } catch (e) {}
+}
+// Every navigation redraws the page, so a light poll keeps the link present without
+// hooking each render path separately.
+setInterval(placeDeepSeekLink, 1200);
+let EN_REV = null;
+// Russian is a translation of English, and English of the two Russian-authored labels
+// plus the reverse of everything already translated — so switching back restores the source.
+function i18nTable(){
+  if (LANG === "ru") return I18N_RU;
+  if (!EN_REV) { EN_REV = Object.assign({}, I18N_EN); for (const k in I18N_RU) EN_REV[I18N_RU[k]] = k; }
+  return EN_REV;
+}
+function t(s){
+  const table = i18nTable();
+  return Object.prototype.hasOwnProperty.call(table, s) ? table[s] : s;
+}
+// The pages themselves are written inline, so instead of tagging every label the
+// dashboard translates whole text nodes: any text that exactly matches a dictionary
+// entry is replaced, and a MutationObserver repeats that for freshly rendered pages.
+const OBSERVE = new MutationObserver(() => { if (!translateDom.pending) {
+  translateDom.pending = true;
+  requestAnimationFrame(() => { translateDom.pending = false; translateDom(); });
+}});
+function translateDom(root){
+  const host = root || document.getElementById("main");
+  if (!(!host)) {
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null);
+    const nodes = []; let node;
+    while ((node = walker.nextNode())) nodes.push(node);
+    const table = i18nTable();
+    for (const n of nodes) {
+      const raw = n.nodeValue, key = raw ? raw.trim() : "";
+      if (!key || !Object.prototype.hasOwnProperty.call(table, key)) continue;
+      n.nodeValue = raw.replace(key, table[key]);
+    }
+  }
+  if (!root && !translateDom.observed) {
+    const main = document.getElementById("main");
+    if (main) { OBSERVE.observe(main, { childList: true, subtree: true, characterData: true }); translateDom.observed = true; }
+  }
+}
 // Pages that work without an open analysis.
-const NO_MODULE = ["home", "help", "haks", "housekeep", "compare"];
+const NO_MODULE = ["home", "help", "haks", "housekeep", "compare", "assistant"];
 // Numbers beside the navigation entries, from the open report. Issues accepted as by design are not counted.
 function counts(){
   const r = S.rep; if (!r) return {};
@@ -506,11 +617,22 @@ function counts(){
 // report the pages that need the server (Modules, Hak editor, Find & replace, editors...) are hidden.
 function renderNav(){
   const c = counts();
-  $("#navItems").innerHTML = NAV.map(([g, items]) => `<div class="group">${g}</div>` + items.map(([k, l]) => {
-    const dis = !NO_MODULE.includes(k) && !S.rep; const hide = STATIC && (k === "map" || k === "home" || k === "help" || k === "haks" || k === "housekeep" || k === "compare" || k === "generator" || k === "edits" || k === "find" || (k === "logs" && !STATIC.logs) || (k === "build" && !(STATIC.build && STATIC.build.audit)));
-    return hide ? "" : `<button class="nv ${S.view===k?"on":""}" data-v="${k}" ${dis?"disabled":""}>${l}<span class="cnt">${c[k]!=null?fmtN(c[k]):""}</span></button>`;}).join("")).join("");
+  $("#navItems").innerHTML = NAV.map(([g, items]) => `<div class="group">${t(g)}</div>` + items.map(([k, l]) => {
+    const dis = !NO_MODULE.includes(k) && !S.rep; const hide = STATIC && (k === "assistant" || k === "localize" || k === "map" || k === "home" || k === "help" || k === "haks" || k === "housekeep" || k === "compare" || k === "generator" || k === "edits" || k === "find" || (k === "logs" && !STATIC.logs) || (k === "build" && !(STATIC.build && STATIC.build.audit)));
+    return hide ? "" : `<button class="nv ${S.view===k?"on":""}" data-v="${k}" ${dis?"disabled":""}>${t(l)}<span class="cnt">${c[k]!=null?fmtN(c[k]):""}</span></button>`;}).join("")).join("");
   $("#navItems").querySelectorAll("button.nv").forEach(b => b.onclick = () => go(b.dataset.v));
-  $("#navFoot").textContent = S.version ? "Version: " + S.version : "";
+  $("#navFoot").textContent = S.version ? t("Version: ") + S.version : "";
+  // Language switch, stored so the choice survives a reload.
+  let ls = document.getElementById("langSel");
+  if (!ls && $("#nav")) {
+    ls = document.createElement("select");
+    ls.id = "langSel";
+    ls.setAttribute("aria-label", t("Language"));
+    ls.innerHTML = '<option value="en">English</option><option value="ru">Русский</option>';
+    ls.value = LANG;
+    ls.onchange = () => { LANG = ls.value; try { localStorage.setItem("dsh_lang", LANG); } catch (e) {} renderNav(); translateDom(); };
+    $("#nav").insertBefore(ls, $("#navItems"));
+  } else if (ls) { ls.value = LANG; }
   // on a phone the pages are one scrolling strip: keep the current page in view
   const on = $("#navItems .nv.on"); if (on && matchMedia("(max-width:900px)").matches) on.scrollIntoView({block: "nearest", inline: "nearest"});
   const sel = $("#modSel");
@@ -648,7 +770,7 @@ VIEWS.home = async (m) => {
     <div id="job" style="margin-top:10px"></div></div>
   <h2>Analysed modules</h2><div id="alist"></div>
   <h2>Settings</h2><div class="card">
-    <p class="small muted" style="margin-top:0">Script validation uses the official compiler <span class="mono">nwn_script_comp</span> from neverwinter.nim. Status: ${st.compiler_found?`<b>found</b> <span class="mono">${esc(st.compiler_found)}</span>`:"<b>not found</b> - download from github.com/niv/neverwinter.nim/releases and put it in the toolkit's <span class='mono'>tools</span> folder, or set the path below."}</p>
+    <p class="small muted" style="margin-top:0">Script validation uses the module's compiler: NWN2 takes <span class="mono">NWNScriptCompiler.exe</span> (the toolkit's tools folder), NWN1 the <span class="mono">nwn_script_comp</span> of neverwinter.nim. Status: ${st.compiler_found?`<b>found</b> <span class="mono">${esc(st.compiler_found)}</span>${st.compiler_kind==="nwn2"?" <span class=small>(NWN2)</span>":""}`:`<b class="sv-warning">not found</b> - put the compiler in the toolkit's tools folder, or set the path below.`}</p>
     <div class="grid2"><label class="small">Compiler path<input type="text" class="wide" id="s_compiler" value="${esc(st.settings.compiler)}"></label>
     <label class="small">NWN install folder (the one with the data and lang folders)<span class="row" style="flex-wrap:nowrap"><input type="text" class="wide grow" id="s_root" value="${esc(st.settings.nwn_root)}" placeholder="${st.default_nwn_root ? `found ${esc(st.default_nwn_root)} - press Detect to use it` : "e.g. C:\\Program Files (x86)\\Steam\\steamapps\\common\\Neverwinter Nights or ~/Library/Application Support/Steam/steamapps/common/Neverwinter Nights"}"><button class="btn" id="s_detect" type="button" title="Look in the usual Steam, GOG and Beamdog places">Detect</button></span></label>
     <label class="small">NWN user folder (Documents/Neverwinter Nights)<input type="text" class="wide" id="s_user" value="${esc(st.settings.nwn_user)}" placeholder="e.g. C:\\Users\\you\\Documents\\Neverwinter Nights or ~/Documents/Neverwinter Nights"></label>
@@ -936,7 +1058,7 @@ function renderAnalysesList(list){
   if (!list.length) return;
   new Table(al, {rows: list, onRow: a => !a.incomplete && !a.archived && load(a.name), columns: [
     {key:"module_name", label:"Module", render: a => `<b>${esc(a.module_name||a.name)}</b>`},
-    {key:"module_path", label:"Source", render: a => `<span class="mono small">${esc(a.module_source||a.module_path||"")}</span>${a.module_source?' <span class="small muted">(nasher)</span>':""}${a.module_missing?' <span class="badge sv-warning" title="This file is no longer at this path - it was renamed, moved or archived after the analysis. The analysis still opens; to analyse the file under its new name, add it as a module."><i></i>file not found</span>':""}`},
+    {key:"module_path", label:"Source", render: a => `<span class="mono small">${esc(a.module_source||a.module_path||"")}</span>${a.module_source?' <span class="small muted">(nasher)</span>':""}`},
     {key:"indexed_at", label:"Analysed", render: a => esc(a.incomplete ? (a.indexed_at ? "started " + a.indexed_at : "") : a.indexed_at)},
     {key:"status", label:"Status", sort: a => a.incomplete ? (a.running ? 1 : 2) : a.archived ? 3 : 0, render: a => a.running ? stBadge("running") :
       a.incomplete ? `${stBadge("incomplete")} <button class="btn small" data-clear="${esc(a.name)}">Clear</button>` :
@@ -1051,6 +1173,227 @@ VIEWS.help = async (m) => {
     m.innerHTML = `<div class="manual">${S.version ? `<p class="small muted">NWN Module Toolkit - version: ${esc(S.version)}</p>` : ""}${mdToHtml(r.markdown)}</div>`; }
   catch(e){ m.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; return; }
   m.querySelectorAll("[data-anchor]").forEach(a => a.onclick = () => { const t = document.getElementById(a.dataset.anchor); if (t) t.scrollIntoView({behavior: "smooth"}); });
+};
+
+// ---------------------------------------------------------------- localization + module -> campaign
+// How much text the module carries and how much of it is Russian, then the toolset's Campaign Editor steps as one
+// button: Campaigns/<name>/ with Campaign.cam, the journal moved there, module.ifo pointed at the campaign.
+VIEWS.localize = async (m) => {
+  if (!S.cur) { m.innerHTML = `<div class="note warn">Откройте проанализированный модуль.</div>`; return; }
+  m.innerHTML = `<p class="muted">Считаю тексты…</p>`;
+  let st;
+  try { st = await api("/api/localize?a=" + encodeURIComponent(S.cur)); }
+  catch(e){ m.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; return; }
+  // глоссарий читаем ДО рендера: его путь попадает в разметку ниже (иначе TDZ: st_gl ещё не объявлен)
+  let st_gl = {path: "", terms: 0, text: ""};
+  try { st_gl = await api("/api/glossary"); }
+  catch(e){ }
+  const bar = (pct, colour) => `<div style="height:8px;border-radius:4px;background:var(--line);margin-top:4px">
+      <div style="height:8px;border-radius:4px;width:${Math.max(0, Math.min(100, pct))}%;background:${colour}"></div></div>`;
+  const card = (title, group, extra) => `<div class="card"><h3 style="margin-top:0">${title}</h3>
+      <div class="big" style="font-size:24px">${group.share}% <span class="small muted">по-русски</span></div>
+      ${bar(group.share, group.share > 60 ? "var(--ok,#2e7d32)" : group.share > 20 ? "var(--warning)" : "var(--critical)")}
+      <p class="small" style="margin:8px 0 0">${extra}<br>символов: ${fmtN(group.chars)} · кириллицы: ${fmtN(group.cyrillic)}</p></div>`;
+  m.innerHTML = `
+    <p class="muted">Тексты по данным анализа: журнал, диалоги и строки, которые скрипты показывают игроку.</p>
+    <div class="grid2">
+      ${card("Журнал", st.journal, `категорий: <b>${st.journal.categories}</b> · записей: <b>${st.journal.entries}</b>`)}
+      ${card("Диалоги", st.dialogues, `файлов: <b>${st.dialogues.files}</b> · узлов: <b>${fmtN(st.dialogues.nodes)}</b> · слов: <b>${fmtN(st.dialogues.words)}</b>`)}
+    </div>
+    <div class="grid2">
+      ${card("Скрипты", st.scripts, `файлов с текстом: <b>${st.scripts.files}</b> · строк для игрока: <b>${st.scripts.literals}</b> <span class="muted">(всего литералов ${fmtN(st.scripts.all_literals)})</span>`)}
+      <div class="card"><h3 style="margin-top:0">Что переводить дальше</h3>
+        ${(st.to_translate || []).slice(0, 8).map(d => `<div class="row small" style="justify-content:space-between">
+            <span>${esc(d.name)}</span><span class="muted">${fmtN(d.chars)} симв. · ${d.share}%</span></div>`).join("") || `<p class="small muted">нет крупных диалогов с низкой долей русского</p>`}
+      </div>
+    </div>
+  <div class="card"><h3 style="margin-top:0">Глоссарий перевода</h3>
+    <p class="small muted">Один список терминов на все модули: его соблюдает ассистент и проверяет валидатор.
+      Формат — одна строка на термин: <code>English = Русский</code>. Файл: <code>${esc(st_gl.path || "")}</code></p>
+    <textarea id="glTerms" rows="10" style="width:100%;box-sizing:border-box;font-family:monospace"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn primary" id="glSave">Сохранить глоссарий</button>
+      <span class="small muted" id="glMsg"></span></div>
+    <div class="row" style="margin-top:10px"><label class="small">Проверить строку</label>
+      <input id="glEn" placeholder="English" style="flex:1"><input id="glRu" placeholder="Русский" style="flex:1">
+      <button class="btn" id="glCheck">Проверить</button></div>
+    <pre id="glOut" class="small" style="white-space:pre-wrap;margin-top:8px"></pre>
+  </div>
+  <div class="card"><h3 style="margin-top:0">Модуль → кампания</h3>
+      <p class="small muted">Делает то же, что Campaign Editor тулсета: создаёт <code>Campaigns\&lt;имя&gt;\</code> с
+        <code>Campaign.cam</code>, переносит туда журнал модуля, очищает журнал в модуле и прописывает модулю
+        <code>Campaign_ID</code>. Всё перезаписывается с копией <code>.bak</code>. Модуль должен быть закрыт в игре и тулсете.</p>
+      <div class="row"><label class="small" style="min-width:120px">Модуль</label>
+        <input id="cvModule" style="flex:1" value="${esc((S.rep && (S.rep.module_path || (S.rep.summary || {}).module_path)) || "")}"
+               placeholder="путь к .mod или к папке модуля"></div>
+      <div class="row" style="margin-top:6px"><label class="small" style="min-width:120px">Имя кампании</label>
+        <input id="cvName" style="flex:1" placeholder="по умолчанию - имя модуля"></div>
+      <div class="row" style="margin-top:6px"><label class="small" style="min-width:120px">Папка Campaigns</label>
+        <input id="cvRoot" style="flex:1" placeholder="по умолчанию - Documents\Neverwinter Nights 2\Campaigns"></div>
+      <div class="row" style="margin-top:8px">
+        <label class="small"><input type="checkbox" id="cvParty"> создание отряда (SoZ)</label>
+        <label class="small">размер <input id="cvSize" type="number" value="6" min="1" max="12" style="width:60px"></label>
+        <label class="small"><input type="checkbox" id="cvLU" checked> свободный мультикласс компаньонов</label>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="cvPlan">Проверить</button>
+        <button class="btn primary" id="cvGo">Конвертировать</button><span class="small muted" id="cvMsg"></span></div>
+      <pre id="cvOut" class="small" style="white-space:pre-wrap;margin-top:8px"></pre>
+    </div>`;
+  const body = (apply) => ({module: $("#cvModule", m).value, name: $("#cvName", m).value,
+    root: $("#cvRoot", m).value, party_create: $("#cvParty", m).checked, party_size: +$("#cvSize", m).value,
+    allow_unrestricted: $("#cvLU", m).checked, apply});
+  const run = async (apply) => {
+    const msg = $("#cvMsg", m), out = $("#cvOut", m);
+    msg.textContent = apply ? "конвертирую…" : "проверяю…"; out.textContent = "";
+    try {
+      const r = await post("/api/campaign/convert", body(apply));
+      out.textContent = `модуль: ${r.module_path} (${r.kind})\nкампания: ${r.campaign_name}\nпапка: ${r.campaign_dir}\n` +
+        `StartModule: ${r.start_module} · категорий журнала: ${r.journal_categories}\n` +
+        (apply ? "записано:" : "будет записано:") + "\n  " + (r.written || []).join("\n  ");
+      msg.textContent = apply ? "готово" : "";
+    } catch(e){ msg.textContent = ""; out.textContent = e.message; }
+  };
+  $("#cvPlan", m).onclick = () => run(false);
+  $("#cvGo", m).onclick = () => run(true);
+
+  // glossary card: текст подставляем после рендера (textarea появляется только теперь)
+  $("#glTerms", m).value = st_gl.text || "";
+  $("#glSave", m).onclick = async () => {
+    const msg = $("#glMsg", m);
+    try { const r = await post("/api/glossary/save", {text: $("#glTerms", m).value});
+      msg.textContent = "сохранено: " + r.terms + " терминов"; $("#glTerms", m).value = r.text; }
+    catch(e){ msg.textContent = e.message; }
+  };
+  $("#glCheck", m).onclick = async () => {
+    const out = $("#glOut", m); out.textContent = "";
+    try { const r = await post("/api/glossary/check", {en: $("#glEn", m).value, ru: $("#glRu", m).value});
+      out.textContent = (r.problems || []).join("\n") || "проблем нет"; }
+    catch(e){ out.textContent = e.message; }
+  };
+
+};
+
+// ---------------------------------------------------------------- assistant (nwn_assistant.py on the server)
+// The DeepSeek key lives in nwn_workspace/harness.json and is read only by the local server: this page never receives
+// it, and the exported (static) report contains no key at all. A proposed file write comes back as a pending change,
+// which the page shows as a diff - nothing is written until "Применить" is pressed.
+VIEWS.assistant = async (m) => {
+  let st;
+  try { st = await api("/api/assistant"); }
+  catch(e){ m.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; return; }
+  const c = st.config, msgs = [];
+  const ctx = () => {
+    const r = S.rep; if (!r) return "Анализ не открыт.";
+    const iss = (r.issues || []).filter(i => i.severity === "error" || i.severity === "warning");
+    const top = {}; iss.forEach(i => { top[i.category] = (top[i.category] || 0) + 1; });
+    return `Анализ «${S.cur}», модуль: ${r.summary.module_name}.\n` +
+      `Замечаний (error+warning): ${iss.length}: ` + Object.entries(top).slice(0, 14).map(([k, v]) => k + " " + v).join(", ") + ".\n" +
+      `Файлов: ${(r.files || []).length}, диалогов: ${(r.conversations || []).length}, скриптов: ${(r.scripts || []).length}, локаций: ${(r.areas || []).length}.`;
+  };
+  const presets = [
+    ["Разобрать Issues", "Разбери замечания этого анализа: что правится в данных модуля, а что объясняется установкой (базовый TLK, отсутствующие модели). Начни с самых частых типов и назови конкретные файлы."],
+    ["Перевести диалог", "Прочитай диалог (имя уточню следующим сообщением) и переведи текст на русский, сохранив разметку <C=...>, поля и переводы строк. Предложи правку через propose_write."],
+    ["Найти использование", "Найди, где используется тег, скрипт или переменная (уточню следующим сообщением), и объясни, что это и на что повлияет изменение."],
+  ];
+  m.innerHTML = `
+  <div class="grid2">
+    <div class="card"><h3 style="margin-top:0">DeepSeek</h3>
+      <div class="row"><label class="small" style="min-width:80px">API-ключ</label>
+        <input id="asKey" type="password" style="flex:1" placeholder="${c.api_key_set ? "сохранён " + esc(c.api_key_hint) : "sk-…"}"></div>
+      <div class="row" style="margin-top:6px"><label class="small" style="min-width:80px">Модель</label>
+        <input id="asModel" style="flex:1" value="${esc(c.model)}" list="asModels">
+        <datalist id="asModels">${(c.models || []).map(x => `<option>${esc(x)}</option>`).join("")}</datalist></div>
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="asSave">Сохранить</button>
+        <button class="btn" id="asTest">Проверить ключ</button><span class="small muted" id="asCfgMsg"></span></div>
+      <p class="small muted">Ключ хранится в <code>${esc(c.config_path)}</code> и читается только локальным сервером — в эту страницу и в статический отчёт он не попадает.</p>
+    </div>
+    <div class="card"><h3 style="margin-top:0">DeepSeek Harness</h3>
+      <p class="small">${st.harness.alive ? "отвечает" : "не запущен"}: <code>${esc(st.harness.url)}</code></p>
+      <div class="row"><button class="btn" id="asOpen">Открыть</button><button class="btn" id="asStart">Запустить</button>
+        <span class="small muted" id="asHarMsg"></span></div>
+      <div class="row" style="margin-top:6px"><label class="small" style="min-width:120px">Команда запуска</label><input id="asCmd" style="flex:1" value="${esc(c.harness_command || "")}" placeholder="оставьте пустым, если запускаете вручную"></div>
+      <p class="small muted">Встроить харнес в страницу нельзя: у него свой токен доступа и запрет фреймов, поэтому он открывается отдельной вкладкой. Команда хранится в конфиге рядом с ключом.</p>
+    </div>
+  </div>
+  <div class="card"><h3 style="margin-top:0">Задача</h3>
+    <div class="row">${presets.map((p, i) => `<button class="btn" data-task="${i}">${esc(p[0])}</button>`).join("")}</div>
+    <textarea id="asInput" rows="4" style="width:100%;margin-top:8px;box-sizing:border-box" placeholder="Что сделать? Например: переведи диалог z3_npc_ar9201_yusdrayl_1 на русский"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn primary" id="asSend">Отправить</button>
+      <span class="small muted" id="asStat"></span></div>
+    <div id="asLog" class="small" style="margin-top:10px"></div>
+    <div id="asPending"></div>
+  </div>`;
+  const log = $("#asLog", m), pend = $("#asPending", m), stat = $("#asStat", m);
+  const bubble = (who, text) => {
+    const d = document.createElement("div");
+    d.className = "note"; d.style.margin = "6px 0";
+    d.innerHTML = `<b>${who}:</b><div style="white-space:pre-wrap;margin-top:4px">${esc(text)}</div>`;
+    log.appendChild(d); d.scrollIntoView({block: "nearest"});
+  };
+  const renderPending = async () => {
+    const cur = await api("/api/assistant");
+    pend.innerHTML = (cur.pending || []).map(p => `<div class="card" style="border-color:var(--accent)">
+        <div class="row"><b>${esc(p.path)}</b><span class="small muted">${p.added >= 0 ? "+" : ""}${p.added} симв.</span></div>
+        <pre class="small" style="max-height:220px;overflow:auto;background:var(--surface-2,#00000010);padding:8px">${esc((p.diff || []).join("\n"))}</pre>
+        <div class="row"><button class="btn primary" data-apply="${esc(p.id)}">Применить</button>
+          <button class="btn" data-drop="${esc(p.id)}">Отклонить</button></div></div>`).join("");
+    pend.querySelectorAll("[data-apply]").forEach(b => b.onclick = async () => {
+      try { const r = await post("/api/assistant/apply", {id: b.dataset.apply});
+        bubble("Ассистент", `записано: ${r.path}${r.backup ? " (копия: " + r.backup + ")" : ""}`);
+        await renderPending(); }
+      catch(e){ bubble("Ошибка", e.message); }
+    });
+    pend.querySelectorAll("[data-drop]").forEach(b => b.onclick = async () => {
+      try { await post("/api/assistant/apply", {id: b.dataset.drop, discard: true}); await renderPending(); }
+      catch(e){ bubble("Ошибка", e.message); }
+    });
+  };
+  $("#asSave", m).onclick = async () => {
+    const msg = $("#asCfgMsg", m);
+    try { const r = await post("/api/assistant/config", {api_key: $("#asKey", m).value, model: $("#asModel", m).value,
+        harness_command: $("#asCmd", m) ? $("#asCmd", m).value : undefined,
+        harness_url: st.harness.url});
+      msg.textContent = "сохранено"; $("#asKey", m).value = "";
+      $("#asKey", m).placeholder = r.config.api_key_set ? "сохранён " + r.config.api_key_hint : "sk-…"; }
+    catch(e){ msg.textContent = e.message; }
+  };
+  $("#asTest", m).onclick = async () => {
+    const msg = $("#asCfgMsg", m); msg.textContent = "проверяю…";
+    try { const r = await post("/api/assistant/test", {});
+      msg.textContent = r.ok ? "ключ работает (" + (r.models || []).length + " моделей)" : "ошибка: " + r.error; }
+    catch(e){ msg.textContent = e.message; }
+  };
+  $("#asOpen", m).onclick = () => window.open(st.harness.url, "_blank");
+  $("#asStart", m).onclick = async () => {
+    const msg = $("#asHarMsg", m); msg.textContent = "запускаю…";
+    try { const r = await post("/api/assistant/harness", {action: "start"});
+      msg.textContent = r.alive ? "запущен: " + r.url : (r.error || "не отвечает, смотрите консоль/первый запуск npx"); }
+    catch(e){ msg.textContent = e.message; }
+  };
+  m.querySelectorAll("[data-task]").forEach(b => b.onclick = () => {
+    $("#asInput", m).value = presets[+b.dataset.task][1]; $("#asInput", m).focus();
+  });
+  const send = async () => {
+    const input = $("#asInput", m), text = input.value.trim();
+    if (!text) return;
+    input.value = ""; bubble("Вы", text); msgs.push({role: "user", content: text});
+    stat.textContent = "думаю…"; $("#asSend", m).disabled = true;
+    try {
+      const r = await post("/api/assistant/chat", {messages: msgs, context: ctx()});
+      bubble("Ассистент", r.say || "(пусто)");
+      if (r.trace && r.trace.length) {
+        const d = document.createElement("details"); d.className = "small";
+        d.innerHTML = `<summary class="muted">инструменты (${r.trace.length})</summary><pre style="white-space:pre-wrap">${esc(r.trace.map(t => t.tool + " " + JSON.stringify(t.args) + " → " + String(t.result).slice(0, 200)).join("\n"))}</pre>`;
+        log.appendChild(d);
+      }
+      msgs.push({role: "assistant", content: r.say || ""});
+      stat.textContent = "готово";
+      await renderPending();
+    } catch(e){ bubble("Ошибка", e.message); stat.textContent = ""; }
+    finally { $("#asSend", m).disabled = false; }
+  };
+  $("#asSend", m).onclick = send;
+  $("#asInput", m).onkeydown = ev => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); } };
+  await renderPending();
 };
 
 // ---------------------------------------------------------------- dialogs (no browser pop-ups)
@@ -1872,7 +2215,7 @@ VIEWS.scripts = (m) => {
   const t = new GroupedTable($("#t", m), {rows: r.scripts, onRow: s => openNode(s.node), badge: rs => worstLv(rs),
     describe: (rs, k, g) => g.startsWith("set") ? exampleNames(rs, s => s.name) + (topList(rs.map(s => s.role), 2) ? " · " + topList(rs.map(s => s.role), 2) : "") : "",
     groupings: {"set (shared name)": s => ssets.get(s.name), "role": s => s.role, "impact": s => s.impact}, order: {"impact": lvOrder}, columns: [
-    {key:"name", label:"Script", render: s => `${nl(s.node, s.name)}${s.compiled?"":` <span class="badge sv-warning" title="No compiled .ncs"><i></i>not compiled</span>`}${cf&&cf[s.name]&&cf[s.name].length?` <span class="badge sv-error"><i></i>compile error</span>`:""}`},
+    {key:"name", label:"Script", render: s => `${nl(s.node, s.name)}${s.compiled?"":(s.role==="Include library"?` <span class="badge sv-info" title="An include library has no .ncs of its own - its functions are compiled into every script that #includes it"><i></i>source only (include)</span>`:` <span class="badge sv-warning" title="No compiled .ncs"><i></i>not compiled</span>`)}${cf&&cf[s.name]&&cf[s.name].length?` <span class="badge sv-error"><i></i>compile error</span>`:""}`},
     {key:"role", label:"Role"},
     {key:"impact", label:"Impact", render: s => lvBadge(s.impact), sort: s => LV.indexOf(s.impact)},
     {key:"summary", label:"What it does", render: s => `<span class="small">${esc(s.description || s.summary)}</span>`},
@@ -1880,7 +2223,7 @@ VIEWS.scripts = (m) => {
   filterBar($("#fb", m), [{id:"q", type:"search", label:"Search name or description…"}, {id:"role", type:"select", label:"All roles", options:[...new Set(r.scripts.map(s => s.role))]},
     {id:"imp", type:"select", label:"Any impact", options: LV}, {id:"unc", type:"check", label:"Only problems"}], f => t.set(r.scripts.filter(s =>
       has(f.q, s.name, s.summary, s.description) && (!f.role || s.role === f.role) && (!f.imp || s.impact === f.imp) &&
-      (!f.unc || !s.compiled || (cf && cf[s.name] && cf[s.name].length)))));
+      (!f.unc || (!s.compiled && s.role !== "Include library") || (cf && cf[s.name] && cf[s.name].length)))));
 };
 
 // Items page: item blueprints (with icons) grouped by name set, base item, area or impact, and the placed objects
@@ -2733,25 +3076,22 @@ VIEWS.compare = async (m) => {
   m.innerHTML = `<p class="muted">Loading…</p>`;
   const st = await api("/api/diff/state");
   const cur = (st.analyses.find(a => a.name === S.cur) || {});
-  // a remembered or analysed path whose file has since been renamed/moved is not offered (st.analyses[].exists)
-  S.cmp = S.cmp || {older: "", newer: cur.exists ? cur.module_path : "", analysis: S.cur || ""};
+  S.cmp = S.cmp || {older: "", newer: cur.module_path || "", analysis: S.cur || ""};
   m.innerHTML = `<h1>Compare modules</h1><p class="sub">What changed between two copies of a module - added, removed and changed files, and for each change the fields or script lines that differ. With an analysis, every change shows its impact level, and a removed file shows how many things used it.</p>
-    <div class="card"><datalist id="cmpList">${st.snapshots.map(x => `<option value="${esc(x.path)}">snapshot ${esc(x.module)} ${esc(x.taken)}</option>`).join("")}${st.analyses.filter(a => a.exists).map(a => `<option value="${esc(a.module_path)}">analysed: ${esc(a.name)}</option>`).join("")}${st.files.filter(f => !st.analyses.some(a => a.exists && a.module_path === f.path)).map(f => `<option value="${esc(f.path)}">${esc(f.modified)} · ${fmtBytes(f.bytes)}</option>`).join("")}</datalist>
-      ${st.analyses.some(a => a.module_path && !a.exists) ? `<p class="small muted" style="margin-top:0">Not offered - the file analysed is no longer there (renamed, moved or archived): ${st.analyses.filter(a => a.module_path && !a.exists).map(a => `<span class="mono">${esc(a.module_path)}</span>`).join(", ")}.</p>` : ""}
+    <div class="card"><datalist id="cmpList">${st.snapshots.map(x => `<option value="${esc(x.path)}">snapshot ${esc(x.module)} ${esc(x.taken)}</option>`).join("")}${st.analyses.filter(a => a.module_path).map(a => `<option value="${esc(a.module_path)}">analysed: ${esc(a.name)}</option>`).join("")}</datalist>
       <label class="small">Older copy (.mod, module folder or a snapshot)<br><input type="text" class="wide" id="cmpA" list="cmpList" value="${esc(S.cmp.older)}"></label>
       <label class="small" style="display:block;margin-top:8px">Newer copy<br><input type="text" class="wide" id="cmpB" list="cmpList" value="${esc(S.cmp.newer)}"></label>
       <div class="row small" style="margin-top:8px">Impact from the analysis <select class="f" id="cmpAn"><option value="">(none)</option>${st.analyses.map(a => `<option ${a.name===S.cmp.analysis?"selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="cmpGo">Compare</button><button class="btn" id="cmpSnap" title="Keep a small record of the newer copy (hashes + script text) so you can compare against it after the .mod is gone">Take a snapshot of the newer copy</button><span class="small muted" id="cmpMsg"></span></div><div id="cmpErr"></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="cmpGo">Compare</button><button class="btn" id="cmpSnap" title="Keep a small record of the newer copy (hashes + script text) so you can compare against it after the .mod is gone">Take a snapshot of the newer copy</button><span class="small muted" id="cmpMsg"></span></div>
       ${st.snapshots.length ? `<details class="small" style="margin-top:8px"><summary>${st.snapshots.length} snapshot(s)</summary>${st.snapshots.map(x => `<div class="mono">${esc(x.name)} · ${fmtBytes(x.bytes)}</div>`).join("")}</details>` : ""}</div>
     <div id="cmpRes"></div>`;
-  // a refusal (file not found...) shows as a warning box under the buttons, not as faint text beside them
-  const run = async (url, body, label) => { const msg = $("#cmpMsg", m), err = $("#cmpErr", m); err.innerHTML = "";
+  const run = async (url, body, label) => { const msg = $("#cmpMsg", m);
     try { const r = await post(url, body); const d = await waitJob(r.job, x => msg.textContent = `${label}: ${x.pct != null ? Math.floor(x.pct) + "% " : ""}${x.msg || ""}`);
       if (d.status !== "done") throw new Error(d.lines.slice(-1)[0] || d.status); msg.textContent = ""; return d.result; }
-    catch(e){ msg.textContent = ""; err.innerHTML = `<div class="note warn small">${esc(e.message)}</div>`; return null; } };
+    catch(e){ msg.textContent = e.message; return null; } };
   $("#cmpGo", m).onclick = async () => { S.cmp = {older: $("#cmpA", m).value.trim(), newer: $("#cmpB", m).value.trim(), analysis: $("#cmpAn", m).value};
     $("#cmpRes", m).innerHTML = "";
-    if (!S.cmp.older || !S.cmp.newer){ $("#cmpErr", m).innerHTML = `<div class="note warn small">Fill in both copies first (pick from the list or paste a path).</div>`; return; }
+    if (!S.cmp.older || !S.cmp.newer){ $("#cmpMsg", m).textContent = "Fill in both copies first (pick from the list or paste a path)."; return; }
     $("#cmpMsg", m).textContent = "Starting…";
     if (await run("/api/diff/compare", S.cmp, "Comparing")) showCmp(); };
   $("#cmpSnap", m).onclick = async () => { const lab = await dialog({title: "Take a snapshot", ok: "Take snapshot", input: {placeholder: "label (optional), e.g. before the cleanup"},
@@ -3021,30 +3361,25 @@ function palRows(pal, ext, hidden, moves = {}, fchanges = {}){
     out.push({ext, type: t.label, node: b.node, resref: b.resref, name: b.name, tag: b.tag, src: src[b.src], pid: b.pid,
               cat: b.cat, path: where(b.cat), cr: b.cr ?? null, note: b.stale || "", hiddenBy: null, hides: (b.hidden || []).length,
               movable: src[b.src] === "module", moveTo: mv ? mv.to : null, movePath: mv ? (pathOfId.get(mv.to) || "#" + mv.to) : null,
-              base: b.base ?? null, flags: b.flags || [], fchg: (fchanges[ext] || {})[b.resref] || null});
+              base: b.base ?? null, fchg: (fchanges[ext] || {})[b.resref] || null});
     if (hidden) (b.hidden || []).forEach(x => out.push({ext, type: t.label, node: b.node, resref: b.resref, name: x.name, tag: x.tag,
       src: src[x.src], pid: x.pid, cat: x.cat, path: where(x.cat), cr: null, note: "", hiddenBy: src[b.src], hides: 0,
-      movable: false, moveTo: null, movePath: null, flags: x.flags || []}));
+      movable: false, moveTo: null, movePath: null}));
   });
   return out;
 }
 // Same-name group key: the name ignoring case and extra spaces; a blueprint without a name is grouped by its resref.
 const sameNameKey = r => { const k = String(r.name || "").trim().replace(/\s+/g, " ").toLowerCase(); return k ? "name:" + k : "resref:" + r.resref; };
 // The rows the Blueprints filters keep. f: {q (lower-cased search), cat (category index, "" = any; its sub-categories
-// count too), src (source name), base (base item number), flag (items: "stolen" / "plot" / "undroppable", "any" = at
-// least one, "none" = no flag), none / stale / waiting (tick boxes)}; cats: the type's categories (each knows its parent).
-const flagOk = (flags, want) => !want || (want === "any" ? flags.length > 0 : want === "none" ? !flags.length : flags.includes(want));
+// count too), src (source name), base (base item number), none / stale / waiting (tick boxes)}; cats: the type's
+// categories (each knows its parent).
 function bpFilter(rows, f, cats){
   const want = f.cat === "" || f.cat == null ? null : +f.cat;
   const under = c => { for (let i = c; i != null; i = cats[i].parent) if (i === want) return true; return false; };
   return rows.filter(r => has(f.q, r.name, r.tag, r.resref) && (want == null || (r.cat != null && under(r.cat))) &&
     (!f.src || r.src === f.src) && (f.base == null || f.base === "" || String(r.base) === String(f.base)) &&
-    (!f.none || r.cat == null) && (!f.stale || !!r.note) && (!f.waiting || r.moveTo != null) && flagOk(r.flags || [], f.flag));
+    (!f.none || r.cat == null) && (!f.stale || !!r.note) && (!f.waiting || r.moveTo != null));
 }
-// Item flags as chips: Stolen, Plot, Undroppable (the item's Cursed field: it can't be dropped)
-const FLAG_LABEL = {stolen: "Stolen", plot: "Plot", undroppable: "Undroppable"};
-const FLAG_OPTS = [["any", "Any flag set"], ["stolen", "Stolen"], ["plot", "Plot"], ["undroppable", "Undroppable"], ["none", "No flag set"]];
-const flagChips = fl => (fl || []).map(f => `<span class="chip" title="${f === "undroppable" ? "Cursed: a player can't drop it" : FLAG_LABEL[f]}">${FLAG_LABEL[f]}</span>`).join(" ");
 // Tick every row that can move (sel: the Set of "ext:resref"). Hidden copies are left out quietly; blueprints whose
 // copy in a hak wins are counted as skipped. Returns {added, skipped}.
 function bpSelect(sel, rows){
@@ -3054,10 +3389,9 @@ function bpSelect(sel, rows){
   return {added, skipped};
 }
 // Fields Change fields… offers per blueprint type (nwn_bpchanges.FIELDS) and how a value reads (a faction by name).
-const BP_FIELDS = {uti: ["name", "tag", "description", "unidentified_description", "stolen", "plot", "undroppable"], utc: ["first_name", "last_name", "tag", "description", "faction"],
+const BP_FIELDS = {uti: ["name", "tag", "description", "unidentified_description"], utc: ["first_name", "last_name", "tag", "description", "faction"],
   utp: ["name", "tag", "description"], utd: ["name", "tag", "description"], utm: ["name", "tag"], uts: ["name", "tag"],
   utt: ["name", "tag"], ute: ["name", "tag"], utw: ["name", "tag", "description"]};
-const BP_FLAG_FIELDS = ["stolen", "plot", "undroppable"];
 const fieldText = (f, v) => { if (f !== "faction") return String(v ?? ""); const fa = (((S.rep || {}).factions || {}).factions || []).find(x => String(x.id) === String(v)); return fa ? `${fa.name} (#${v})` : `#${v}`; };
 // A CSV cell: quoted when needed, and a leading = + - @ (or tab / CR) defused with ' so a spreadsheet never runs a
 // blueprint name as a formula (names come from haks anyone can make).
@@ -3090,14 +3424,13 @@ VIEWS.blueprints = async (m) => {
     <div id="bpmv"></div><div id="bpv"></div><div id="bpt"></div><div class="filters" id="bpf"></div><div id="bpn"></div><div id="bpb"></div>`;
   const draw = () => {
     if (st.view === "tree" && st.ext === "all") st.ext = "uti";
-    $("#bpv", m).innerHTML = tabs("bpview", st.view, [["tree", "Palette tree"], ["same", "Same name"], ...(STATIC ? [] : [["flags", "Placed item flags"]])]);
+    $("#bpv", m).innerHTML = tabs("bpview", st.view, [["tree", "Palette tree"], ["same", "Same name"]]);
     $("#bpt", m).innerHTML = tabs("bpext", st.ext, [...BP_TYPES.map(e => [e, `${pal.types[e].label} (${fmtN(pal.types[e].blueprints.length)})`]),
       st.view === "same" && ["all", "All types"]]);
     // a new tab keeps the search text but not the category / base item filters (those differ per palette)
     const keepQ = () => { st.f = {q: (st.f || {}).q, once: (st.f || {}).once}; };
     m.querySelectorAll("[data-bpview]").forEach(b => b.onclick = () => { st.view = b.dataset.bpview; keepQ(); draw(); });
     m.querySelectorAll("[data-bpext]").forEach(b => b.onclick = () => { st.ext = b.dataset.bpext; keepQ(); draw(); });
-    if (st.view === "flags"){ $("#bpt", m).innerHTML = ""; $("#bpn", m).innerHTML = ""; drawMoves(); drawFlags(); return; }
     const exts = st.ext === "all" ? BP_TYPES : [st.ext];
     let rows = exts.flatMap(e => palRows(pal, e, st.view === "same", moves, fchanges));
     drawMoves();
@@ -3111,7 +3444,6 @@ VIEWS.blueprints = async (m) => {
     if (srcs.length > 1) opts.push({id: "src", type: "select", label: "Any source", options: srcs});
     if (st.ext === "uti" && t.base_names) opts.push({id: "base", type: "select", label: "Any base item",
       options: Object.entries(t.base_names).sort((a, b) => a[1].localeCompare(b[1])).map(([k, v]) => [k, v])});
-    if (st.ext === "uti") opts.push({id: "flag", type: "select", label: "Any item flags", options: FLAG_OPTS});
     opts.push({id: "none", type: "check", label: "In no category"}, {id: "stale", type: "check", label: "Palette file out of date"});
     if (!STATIC) opts.push({id: "waiting", type: "check", label: "Waiting move"});
     if (st.view === "same") opts.push({id: "once", type: "check", label: "Only names used more than once"});
@@ -3149,11 +3481,10 @@ VIEWS.blueprints = async (m) => {
     }
     $("#bpcsv", m).onclick = () => { const vis = filtered();
       downloadCsv(`blueprints_${st.ext}${st.view === "same" ? "_same_name" : ""}.csv`,
-        [...(st.view === "same" ? ["group"] : []), "type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "stolen", "plot", "undroppable", "note", "waiting_move", "move_to",
-         "new_name", "new_first_name", "new_last_name", "new_tag", "new_description", "new_unidentified_description", "new_faction", "new_stolen", "new_plot", "new_undroppable", "all_copies"],
+        [...(st.view === "same" ? ["group"] : []), "type", "palette", "name", "tag", "resref", "source", "palette_number", "cr", "note", "waiting_move", "move_to",
+         "new_name", "new_first_name", "new_last_name", "new_tag", "new_description", "new_unidentified_description", "new_faction"],
         vis.map(r => [...(st.view === "same" ? [r.group] : []), r.type, palWhere(r), r.name, r.tag, r.resref, r.src, r.pid ?? "", r.cr ?? "",
-          ...BP_FLAG_FIELDS.map(f => (r.flags || []).includes(f) ? "yes" : ""),
-          r.hiddenBy ? `hidden by ${r.hiddenBy} (the game uses that copy)` : r.note, r.moveTo != null ? r.movePath : "", "", "", "", "", "", "", "", "", "", "", "", ""])); };
+          r.hiddenBy ? `hidden by ${r.hiddenBy} (the game uses that copy)` : r.note, r.moveTo != null ? r.movePath : "", "", "", "", "", "", "", "", ""])); };
     // columns shared by both views; Type only in All types, CR only for creatures, Palette when rows are not under a category heading
     const cols = (withPath, withDup) => [
       ...(STATIC ? [] : [{key: "sel", label: "", sort: r => S.bpSel.has(r.ext + ":" + r.resref), render: r => r.hiddenBy ? "" : r.movable
@@ -3167,7 +3498,6 @@ VIEWS.blueprints = async (m) => {
       {key: "src", label: "Source", render: r => esc(r.src) + (r.hides ? ` <span class="small muted" title="Copies in other places that load order hides">(+${r.hides} hidden)</span>` : "")},
       ...(withPath ? [{key: "path", label: "Palette", render: r => r.path == null ? `<span class="muted">${esc(palWhere(r))}</span>` : esc(r.path), sort: r => r.path ?? "~"}] : []),
       ...(st.ext === "utc" || st.ext === "all" ? [{key: "cr", label: "CR", num: true, render: r => r.cr ?? ""}] : []),
-      ...(st.ext === "uti" || st.ext === "all" ? [{key: "flags", label: "Flags", render: r => flagChips(r.flags), sort: r => (r.flags || []).join(",")}] : []),
       ...(withDup ? [{key: "dup", label: "Duplicates", render: r => (S.dupOf && S.dupOf[r.node] || []).map(g => `<a href="#" class="chip" data-go="duplicates" title="Same content: duplicate group #${g.id} (${esc(g.category)}) - open the Duplicates page">#${g.id}</a>`).join(" ")}] : []),
       {key: "note", label: "Note", render: r => (r.moveTo != null ? `<span class="small"><b>→ ${esc(r.movePath)}</b> (next build) <a href="#" data-undo="${esc(r.ext + ":" + r.resref)}">undo</a></span> ` : "") +
         (r.fchg && !r.hiddenBy ? `<span class="small">${Object.entries(r.fchg).map(([f, v]) => `<b>${esc(f.replace(/_/g, " "))} → ${esc(fieldText(f, v.to))}</b>`).join(", ")} (next build) <a href="#" data-fundo="${esc(r.ext + ":" + r.resref)}">undo</a></span> ` : "") +
@@ -3179,7 +3509,7 @@ VIEWS.blueprints = async (m) => {
     const onRow = r => openNode(r.node);
     function drawTree(f){
       const host = $("#bpb", m);
-      if (f.q || f.cat || f.src || f.base || f.flag || f.none || f.stale || f.waiting){   // a search or filter: one flat list with paths
+      if (f.q || f.cat || f.src || f.base || f.none || f.stale || f.waiting){   // a search or filter: one flat list with paths
         const vis = bpFilter(rows, f, t.categories);
         host.innerHTML = `<div id="bpflat"></div>`; new Table($("#bpflat", host), {rows: vis, columns: cols(true, false), onRow, after, empty: "No blueprint matches."}); return;
       }
@@ -3220,56 +3550,6 @@ VIEWS.blueprints = async (m) => {
     function list(){ (st.view === "same" ? drawSame : drawTree)(get()); selCount(); }
     list();
   };
-  // Placed item flags: items placed in areas (inventories, equipment, containers, stores, the ground) that have Stolen,
-  // Plot or Undroppable set, or whose flags differ from their blueprint's (/api/itemflags, nwn_itemflags). A placed item
-  // is a full copy that keeps its own flags, so changing a blueprint only reaches copies still holding its old value -
-  // unless Change fields… is saved with "all placed copies".
-  let flagsLoad = 0;                                       // a newer drawFlags() makes an older one's result stale
-  async function drawFlags(){
-    const host = $("#bpb", m), fb = $("#bpf", m), mine = ++flagsLoad;
-    fb.innerHTML = ""; host.innerHTML = `<p class="muted">Reading the items placed in areas…</p>`;
-    let d; try { d = await api(`/api/itemflags?a=${encodeURIComponent(S.cur)}`); }
-    catch(e){ if (mine === flagsLoad) host.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; return; }
-    if (st.view !== "flags" || mine !== flagsLoad) return;   // the user moved on, or clicked again, while it loaded
-    const sm = d.summary, rows = d.copies;
-    $("#bpt", m).innerHTML = `<div class="tiles"><div class="tile"><div class="v">${fmtN(sm.placed)}</div><div class="l">items placed in areas</div></div>
-      <div class="tile"><div class="v">${fmtN(sm.stolen)}</div><div class="l">Stolen</div></div><div class="tile"><div class="v">${fmtN(sm.plot)}</div><div class="l">Plot</div></div>
-      <div class="tile"><div class="v">${fmtN(sm.undroppable)}</div><div class="l">Undroppable</div></div><div class="tile"><div class="v">${fmtN(sm.differs)}</div><div class="l">differ from their blueprint</div></div></div>
-      <p class="small">Items placed in an area - in a creature's inventory or equipment, a container, a store or on the ground - with a flag set, or whose flags differ from their blueprint's. Each is a copy that keeps its own flags: <b>Change fields…</b> on a blueprint reaches the copies still holding its old value, and with <b>all placed copies</b> ticked, every copy. Undroppable is the item's Cursed flag. Items the game creates from a blueprint (store and creature blueprints that list them by name, scripts) use the blueprint's flags and are not listed. For the blueprints themselves, use the Items tab's <b>Any item flags</b> filter.</p>
-      ${sm.in_hak ? `<div class="note warn small">${fmtN(sm.in_hak)} of these sit in areas whose copy in a hak is the one the game uses (marked <b>hak</b>): a build changes module files only, so change those in the hak.</div>` : ""}`;
-    const opts = [{id: "q", type: "search", label: "Search name, tag, resref, area or who holds it…"}, {id: "flag", type: "select", label: "Any item flags", options: FLAG_OPTS},
-      {id: "differs", type: "check", label: "Differs from its blueprint"}];
-    let t = null;
-    const get = filterBar(fb, opts, () => list());
-    fb.insertAdjacentHTML("beforeend", `<button class="btn" id="ifcsv">Export CSV</button> <button class="btn" id="ifchg" title="Tick the module blueprints of the copies shown and open Change fields…">Change their blueprints…</button> <span id="ifsn" class="small muted"></span>`);
-    function filtered(){ const f = get(); return rows.filter(c => has(f.q, c.name, c.tag, c.resref, c.area, c.area_name, c.held_by) && flagOk(c.flags, f.flag) && (!f.differs || c.differs)); }
-    const bpText = c => c.bp_flags == null ? "no blueprint" : (c.bp_flags.length ? c.bp_flags.map(f => FLAG_LABEL[f]).join(" + ") : "none") + (c.bp_source === "base game" ? " (base game)" : "");
-    function list(){ const vis = filtered();
-      if (t){ t.set(vis); return; }
-      t = new Table(host, {rows: vis, onRow: c => openNode(c.node), empty: "No placed item matches.", columns: [
-        {key: "name", label: "Item", render: c => nl(c.node, c.name || c.resref) + ` <span class="mono small muted">${esc(c.resref)}</span>`},
-        {key: "flags", label: "Flags", render: c => flagChips(c.flags) || '<span class="muted small">none</span>', sort: c => c.flags.join(",")},
-        {key: "bp", label: "Blueprint's flags", render: c => `<span class="small${c.differs ? "" : " muted"}">${esc(bpText(c))}</span>`, sort: bpText},
-        {key: "differs", label: "Differs", render: c => c.differs ? `<span class="badge sv-warning"><i></i>differs</span>` : "", sort: c => c.differs ? 0 : 1},
-        {key: "area", label: "Area", render: c => `${esc(c.area_name || c.area)} <span class="mono small muted">${esc(c.area)}</span>` + (c.area_src && c.area_src !== "module" ? ` <span class="chip" title="The game uses this area's copy in ${esc(c.area_src)}: a build can't change it - change it in the hak">hak ${esc(c.area_src)}</span>` : ""), sort: c => c.area_name || c.area},
-        {key: "held_by", label: "Held by", render: c => c.held_by_node ? nl(c.held_by_node, c.held_by) : `<span class="muted">${esc(c.held_by)}</span>`},
-        {key: "where", label: "Where in the area file", render: c => `<span class="mono small">${esc(c.where)}</span>`}]}); }
-    $("#ifcsv", m).onclick = () => downloadCsv("placed_item_flags.csv",
-      ["name", "resref", "tag", "area", "area_resref", "area_from", "held_by", "where", "stolen", "plot", "undroppable", "blueprint_flags", "differs_from_blueprint"],
-      filtered().map(c => [c.name, c.resref, c.tag, c.area_name, c.area, c.area_src, c.held_by, c.where, ...BP_FLAG_FIELDS.map(f => c.flags.includes(f) ? "yes" : ""), bpText(c), c.differs ? "yes" : ""]));
-    $("#ifchg", m).onclick = async () => {
-      const own = new Set(pal.types.uti.blueprints.filter(b => pal.sources[b.src] === "module").map(b => b.resref));
-      const want = [...new Set(filtered().map(c => c.resref))], ok = want.filter(r => own.has(r));
-      if (!ok.length){ $("#ifsn", m).textContent = "None of these copies has a blueprint in the module (base game, a hak, or none)."; return; }
-      const keys = ok.map(r => "uti:" + r);
-      // ticks made elsewhere on the page are replaced only after asking
-      if ([...S.bpSel].some(k => !keys.includes(k)) && !await dialog({title: "Replace your ticked blueprints?",
-          html: `You have ${plural(S.bpSel.size, "blueprint")} ticked. Tick the ${plural(ok.length, "item blueprint")} of the copies shown instead?`, ok: "Replace"})) return;
-      S.bpSel.clear(); keys.forEach(k => S.bpSel.add(k));
-      $("#ifsn", m).textContent = `${fmtN(ok.length)} blueprint(s) ticked` + (want.length > ok.length ? `; ${fmtN(want.length - ok.length)} skipped (base game, a hak, or no blueprint)` : "") + ".";
-      changeFields(); };
-    list();
-  }
   // the waiting moves: a count tile and a panel listing them, each with undo
   function drawMoves(){
     if (STATIC) return;
@@ -3284,10 +3564,10 @@ VIEWS.blueprints = async (m) => {
     const ua = $("#bpundoall", m); if (ua) ua.onclick = async () => { if (await dialog({title: "Undo all moves", html: `Cancel all ${plural(nMoves(), "waiting move")}? Nothing has been changed yet, so nothing else is affected.`, ok: "Undo all"})) undo(null, null); };
     // the waiting field changes (faction, name, tag, description)
     const fl = Object.entries(fchanges).flatMap(([x, v]) => Object.entries(v).flatMap(([rr, fs]) => Object.entries(fs).map(([f, c]) => {
-      const b = pal.types[x].blueprints.find(b_ => b_.resref === rr); return {x, rr, f, label: pal.types[x].label, name: b ? b.name : rr, from: c.from, to: c.to, all: c.copies === "all"}; })));
+      const b = pal.types[x].blueprints.find(b_ => b_.resref === rr); return {x, rr, f, label: pal.types[x].label, name: b ? b.name : rr, from: c.from, to: c.to}; })));
     if (fl.length){
       $("#bpmv", m).insertAdjacentHTML("beforeend", `<details class="card"><summary><b>${plural(fl.length, "field change")} waiting for the next Build &amp; audit</b> <span class="small muted">the blueprint and every placed copy still holding the old value</span></summary>
-        <div class="tw"><table class="dt small"><thead><tr><th>Type</th><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th></th></tr></thead><tbody>${fl.map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.name)} <span class="mono muted">${esc(r.rr)}</span></td><td>${esc(r.f.replace(/_/g, " "))}</td><td>${esc(fieldText(r.f, r.from))}</td><td><b>${esc(fieldText(r.f, r.to))}</b>${r.all ? ' <span class="small muted">(all placed copies)</span>' : ""}</td><td><a href="#" data-fundo="${esc(r.x + ":" + r.rr + ":" + r.f)}">undo</a></td></tr>`).join("")}</tbody></table></div>
+        <div class="tw"><table class="dt small"><thead><tr><th>Type</th><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th></th></tr></thead><tbody>${fl.map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.name)} <span class="mono muted">${esc(r.rr)}</span></td><td>${esc(r.f.replace(/_/g, " "))}</td><td>${esc(fieldText(r.f, r.from))}</td><td><b>${esc(fieldText(r.f, r.to))}</b></td><td><a href="#" data-fundo="${esc(r.x + ":" + r.rr + ":" + r.f)}">undo</a></td></tr>`).join("")}</tbody></table></div>
         <button class="btn" id="bpfundoall">Undo all field changes</button></details>`);
       $("#bpmv", m).querySelectorAll("[data-fundo]").forEach(a => a.onclick = e => { e.preventDefault(); const [x, rr, f] = a.dataset.fundo.split(":"); fundo(x, [rr], f); });
       $("#bpfundoall", m).onclick = async () => { if (await dialog({title: "Undo all field changes", html: `Cancel all ${plural(nFields(), "waiting field change")}? Nothing has been changed yet.`, ok: "Undo all"})) fundo(null, null); };
@@ -3308,29 +3588,26 @@ VIEWS.blueprints = async (m) => {
     const facs = ((S.rep.factions || {}).factions || []);
     const md = h(`<div class="modal"><div class="box" role="dialog" aria-modal="true" aria-label="Change fields"><div class="bh"><b>Change fields of ${plural(rrs.length, t.label.toLowerCase().slice(0, -1))}</b></div>
       <div class="bb small" id="cfb"><p class="muted">Fill only what should change; empty fields stay as they are. The same value goes to every ticked blueprint, and to every copy placed in an area that still holds the blueprint's old value.</p>
-        ${fields.map(f => `<label class="small" style="display:block;margin:6px 0"><b>${esc(f.replace(/_/g, " "))}</b>${f === "undroppable" ? ' <span class="muted">(the Cursed flag: a player can\'t drop it)</span>' : ""}<br>${f === "faction" ? `<select class="f" data-cf="faction"><option value="">(unchanged)</option>${facs.map(fa => `<option value="${fa.id}">${esc(fa.name)} (#${fa.id})</option>`).join("")}</select>`
-          : BP_FLAG_FIELDS.includes(f) ? `<select class="f" data-cf="${f}"><option value="">(unchanged)</option><option value="yes">yes</option><option value="no">no</option></select>`
+        ${fields.map(f => `<label class="small" style="display:block;margin:6px 0"><b>${esc(f.replace(/_/g, " "))}</b><br>${f === "faction" ? `<select class="f" data-cf="faction"><option value="">(unchanged)</option>${facs.map(fa => `<option value="${fa.id}">${esc(fa.name)} (#${fa.id})</option>`).join("")}</select>`
           : f.includes("description") ? `<textarea class="wide" rows="3" data-cf="${f}"></textarea>` : `<input type="text" class="wide" data-cf="${f}" ${f === "tag" ? 'maxlength="32"' : ""}>`}</label>`).join("")}
-        ${x === "uti" ? `<label class="small" style="display:block;margin:8px 0"><input type="checkbox" id="cfall"> Set the flags on <b>all placed copies</b> too - also copies that have their own value (names, tags and descriptions always keep a copy's own)</label>` : ""}
         <p class="muted">A new name or description replaces the text in every language (and a talk-table entry it came from). A tag that scripts or conversations look up can't be changed here - Find &amp; replace renames those everywhere.</p></div>
       <div class="bf row"><span class="grow"></span><button class="btn" id="cfno">Cancel</button><button class="btn primary" id="cfok">Preview…</button></div></div></div>`);
     const close = openModal(md, () => close(), md.querySelector("[data-cf]"));
     $("#cfno", md).onclick = () => close();
     const values = () => Object.fromEntries([...md.querySelectorAll("[data-cf]")].map(e => [e.dataset.cf, e.value]).filter(([k, v]) => String(v).trim() !== ""));
-    let planned = null, allc = false;    // all_copies: item flags also go to placed copies holding their own value
+    let planned = null;
     $("#cfok", md).onclick = async () => {
       if (planned){                                   // second press: Save (the server plans again)
-        let r; try { r = await post("/api/bpchange/save", {a: S.cur, ext: x, resrefs: rrs, values: planned, all_copies: allc}); }
+        let r; try { r = await post("/api/bpchange/save", {a: S.cur, ext: x, resrefs: rrs, values: planned}); }
         catch(e){ $("#cfb", md).insertAdjacentHTML("beforeend", `<div class="note warn">${esc(e.message)}</div>`); return; }
         close(); fchanges = r.changes; S.bpSel.clear(); draw(); return;
       }
       const v = values(); if (!Object.keys(v).length) return;
-      allc = !!($("#cfall", md) || {}).checked;
-      let p; try { p = await post("/api/bpchange/plan", {a: S.cur, ext: x, resrefs: rrs, values: v, all_copies: allc}); }
+      let p; try { p = await post("/api/bpchange/plan", {a: S.cur, ext: x, resrefs: rrs, values: v}); }
       catch(e){ $("#cfb", md).insertAdjacentHTML("beforeend", `<div class="note warn">${esc(e.message)}</div>`); return; }
       $("#cfb", md).innerHTML = `<ul><li><b>${fmtN(p.changes.length)}</b> change(s)</li><li>${fmtN(p.unchanged)} already so</li><li><b style="color:var(--${p.refused.length ? "critical" : "good"}-text)">${fmtN(p.refused.length)}</b> refused</li></ul>
         ${p.refused.length ? `<h4>Refused</h4><div class="tw" style="max-height:180px;overflow:auto"><table class="dt small"><tbody>${p.refused.map(r_ => `<tr><td class="mono">${esc(r_.item.split(":")[1])}</td><td>${esc(r_.why)}</td></tr>`).join("")}</tbody></table></div>` : ""}
-        ${p.changes.length ? `<h4>Changes</h4><div class="tw" style="max-height:240px;overflow:auto"><table class="dt small"><thead><tr><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th>Placed copies</th></tr></thead><tbody>${p.changes.slice(0, 1000).map(c => `<tr><td>${esc(c.name)} <span class="mono muted">${esc(c.resref)}</span></td><td>${esc(c.field.replace(/_/g, " "))}</td><td>${esc(fieldText(c.field, c.from))}</td><td><b>${esc(fieldText(c.field, c.to))}</b>${c.copies === "all" && String(c.from) === String(c.to) ? ' <span class="muted">(blueprint already so: placed copies only)</span>' : ""}</td><td class="num" title="${c.copies === "all" ? "placed in areas; every copy that doesn't hold the new value changes" : "placed in areas; only those still holding the old value change"}">${c.copies === "all" ? "all" : "up to"} ${fmtN(c.placed)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+        ${p.changes.length ? `<h4>Changes</h4><div class="tw" style="max-height:240px;overflow:auto"><table class="dt small"><thead><tr><th>Blueprint</th><th>Field</th><th>From</th><th>To</th><th>Placed copies</th></tr></thead><tbody>${p.changes.slice(0, 1000).map(c => `<tr><td>${esc(c.name)} <span class="mono muted">${esc(c.resref)}</span></td><td>${esc(c.field.replace(/_/g, " "))}</td><td>${esc(fieldText(c.field, c.from))}</td><td><b>${esc(fieldText(c.field, c.to))}</b></td><td class="num" title="placed in areas; only those still holding the old value change">up to ${fmtN(c.placed)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
       if (!p.changes.length){ $("#cfok", md).hidden = true; return; }
       planned = v; $("#cfok", md).textContent = `Save ${fmtN(p.changes.length)} change${p.changes.length === 1 ? "" : "s"}`;
     };
@@ -3963,6 +4240,10 @@ VIEWS.generator = async (m) => {
   S.view = view; renderNav();
   if (last) load(last, view); else go(view, true);
 })();
-</script>
+// Translate whatever is already on screen when the page opens, then let the observer
+// keep following every page the dashboard renders. Switching the language re-runs it.
+window.addEventListener("load", function(){
+  setTimeout(function(){ try { translateDom(); } catch (e) {} }, 0);
+});</script>
 </body>
 </html>

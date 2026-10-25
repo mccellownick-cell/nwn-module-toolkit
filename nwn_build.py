@@ -109,10 +109,9 @@ class Rewriter:
         self.move_tree_exts = set(move_tree_exts)   # types whose palette file the game uses is the module's own
         self.moved_bps = set()            # (ext, resref) whose palette number was set
         self.moved_entries = set()        # (ext, resref) the module's palette file now lists under the new category
-        # bulk blueprint changes (Blueprints page; set by build()): (ext, resref) -> {label: (old, new, field, every)}.
-        # The blueprint gets the new values; a placed copy (same TemplateResRef, in an area) gets each one whose field
-        # still holds the blueprint's old value - a copy the builder gave its own name keeps it - or, for an item flag
-        # saved with "all placed copies" (every), each one that doesn't hold the new value yet
+        # bulk blueprint changes (Blueprints page; set by build()): (ext, resref) -> {label: (old, new, field)}. The
+        # blueprint gets the new values; a placed copy (same TemplateResRef, in an area) gets each one whose field
+        # still holds the blueprint's old value - a copy the builder gave its own name keeps it
         self.bp_changes = {}
         self.bc_applied = set()           # (ext, resref) whose blueprint got its changes
         self.bc_placed = defaultdict(int)  # (ext, resref, field) -> placed copies changed
@@ -147,7 +146,7 @@ class Rewriter:
             if key in self.palette_moves:
                 self._move_blueprint(root, key)
             if key in self.bp_changes:
-                for label, (_old, new, field, _every) in self.bp_changes[key].items():
+                for label, (_old, new, field) in self.bp_changes[key].items():
                     if label in root.fields:
                         if root.get(label) != new:
                             self._set_value(root, label, new, "", "blueprint change (Blueprints page)")
@@ -187,23 +186,9 @@ class Rewriter:
         self._walk_fields(s, path, ctx_ext, is_root=is_root)
         if self.bp_changes and ctx_ext and not is_root and "TemplateResRef" in s.fields:
             tr = (s.get("TemplateResRef") or "").lower()
-            for label, (old, new, field, every) in self.bp_changes.get((ctx_ext, tr), {}).items():
-                flag = field in nwn_bpchanges.FLAG_FIELDS
-                if label not in s.fields and not flag:
-                    continue                     # a text/tag/faction the copy doesn't have: nothing to follow
-                # an item flag the copy doesn't store is not set (0), as the game reads it
-                cur = (int(s.get(label) or 0) if label in s.fields else 0) if flag else s.get(label)
-                # a copy follows when it still holds the blueprint's old value; with "all copies" (item flags) every
-                # copy that doesn't already hold the new value
-                if (cur == old or every) and cur != new:
-                    why = ("placed copy follows its blueprint (Blueprints page)" if cur == old else
-                           "placed copy set like its blueprint - all copies (Blueprints page)")
-                    if label in s.fields:
-                        self._set_value(s, label, new, path, why)
-                    else:                        # add the missing flag, logged like a blueprint's added field
-                        s.set(label, BC_TYPE[field], new)
-                        self.changes.append(dict(file=self.cur, field=f"{path}/{label}".strip("/"), old=None,
-                                                 new=_logval(new), why=why))
+            for label, (old, new, field) in self.bp_changes.get((ctx_ext, tr), {}).items():
+                if label in s.fields and s.get(label) == old:
+                    self._set_value(s, label, new, path, "placed copy follows its blueprint (Blueprints page)")
                     self.bc_placed[(ctx_ext, tr, field)] += 1
         for label, f in s.fields.items():
             if f.type == n.STRUCT:
@@ -355,7 +340,7 @@ def _finish_palette_moves(move_log, rw, tree_exts):
 TYPE_LABEL = {ext: label for ext, (_stem, label) in PALETTE_TYPES.items()}    # uti -> Items (change log)
 # GFF field type of each bulk-changeable field, for a blueprint that lacks the field altogether
 BC_TYPE = {f: n.CEXOLOCSTRING for f in nwn_bpchanges.TEXT_FIELDS}
-BC_TYPE.update(tag=n.CEXOSTRING, faction=n.WORD, **{f: n.BYTE for f in nwn_bpchanges.FLAG_FIELDS})
+BC_TYPE.update(tag=n.CEXOSTRING, faction=n.WORD)
 
 
 def _logval(v):
@@ -368,8 +353,7 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
 
     changes: the waiting changes; files: the module's files rows (relpath, resref, ext, node, sha); read(relpath):
     the bytes the build will copy (the edits overlay's copy when there is one). Each blueprint is read to learn its
-    old values, which decide which placed copies follow. Returns ({(ext, resref): {label: (old, new, field, every)}}
-    - every: the change has copies "all", so placed copies holding their own value change too - , log
+    old values, which decide which placed copies follow. Returns ({(ext, resref): {label: (old, new, field)}}, log
     entries [{type, resref, field, from, to, status "changed"/"skipped", note, placed}]). plan["blueprint_changes"]
     false applies none. Never raises for a bad file: such a change is skipped with a note."""
     if not plan.get("blueprint_changes", True) or not changes:
@@ -380,8 +364,7 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
         for rr, fields in sorted(bps.items()):
             node = f"bp:{rr}.{ext}"
             entries = [dict(type=ext, resref=rr, field=f, to=v.get("to"), status="skipped", note="", placed=0,
-                            **{"from": v.get("from")}, **({"copies": "all"} if v.get("copies") == "all" else {}))
-                       for f, v in sorted(fields.items())]
+                            **{"from": v.get("from")}) for f, v in sorted(fields.items())]
             log += entries
             rel = where.get((ext, rr))
             why = ("deleted in this build" if node in delete_nodes else
@@ -405,11 +388,7 @@ def _blueprint_changes(plan, changes, files, delete_nodes, merged_away, read):
                     e["note"] = f"'{e['to']}' is not a valid value"
                     continue
                 old = root.get(label) if label in root.fields else None
-                if e["field"] in nwn_bpchanges.FLAG_FIELDS:
-                    old = int(old or 0)          # a missing flag is not set (as in the game): copies holding 0 follow
-                # "all copies" only for item flags (nwn_bpchanges.FLAG_FIELDS); names, tags... keep a copy's own value
-                every = e.get("copies") == "all" and e["field"] in nwn_bpchanges.FLAG_FIELDS
-                out.setdefault((ext, rr), {})[label] = (old, new, e["field"], every)
+                out.setdefault((ext, rr), {})[label] = (old, new, e["field"])
                 e["status"] = "changed"
     return out, log
 
@@ -827,7 +806,7 @@ def build(analysis_dir, plan, out_dir=None, name=None, run_audit=True, verbose=T
         import tempfile
         ak = audit_kwargs or {}
         pg.step("compile", f"{len(to_compile)} script(s)")
-        out_tmp = tempfile.mkdtemp(prefix="nwn_build_ncs_")      # fresh: an old .ncs can never pass as a new one
+        out_tmp = n.temp_dir("nwn_build_ncs_")      # fresh: an old .ncs can never pass as a new one
         src_tmp = _compile_sources(db, target, set(to_compile))  # the clean folder's scripts + hak copies, game order
         try:
             # compile_files runs the official compiler without a shell (argument list), in batches that keep each
@@ -892,10 +871,15 @@ def build(analysis_dir, plan, out_dir=None, name=None, run_audit=True, verbose=T
                 packed = _point_module_at_haks(packed, target, renamed, rw, log)
             log["renamed_haks"] = renamed
             log["unchanged_haks"] = sorted(k for k, v in lean_man["haks"].items() if v.get("unchanged"))
-    # step 8: pack the .mod. An ERF has no folders and 16-character names, so a file name over 16 characters, or the
-    # same name in two subfolders of a folder module, can't be packed: the folder is still written, the .mod is not
+    # step 8: pack the .mod. An ERF has no folders and a length limit on names (16 characters in NWN1, 32 in NWN2),
+    # so a file name over that limit, or the same name in two subfolders of a folder module, can't be packed: the
+    # folder is still written, the .mod is not
     mod_file = os.path.join(out_dir, f"{name}.mod")
-    long_names = [f"{r}.{e}" for r, e, _ in packed if len(r) > 16]
+    # NWN2 modules are ERF V1.1 (40-byte key entries, 32-character resrefs); NWN1 is V1.0 (24 bytes, 16 characters).
+    # The build writes back whatever family the original was, so the copy stays loadable by the same game.
+    nwn2 = bool(erf and erf.version == "V1.1")
+    name_limit = 32 if nwn2 else 16
+    long_names = [f"{r}.{e}" for r, e, _ in packed if len(r) > name_limit]
     seen_names = set(); dupes = []
     for r, e, _ in packed:
         key = f"{r}.{e}".lower()
@@ -903,7 +887,8 @@ def build(analysis_dir, plan, out_dir=None, name=None, run_audit=True, verbose=T
             dupes.append(key)
         seen_names.add(key)
     if long_names or dupes:
-        log["warnings"].append("No .mod written: " + (f"names over 16 chars: {long_names[:5]} " if long_names else "") +
+        log["warnings"].append("No .mod written: " + (
+            f"names over {name_limit} chars: {long_names[:5]} " if long_names else "") +
                                (f"same name in several subfolders: {dupes[:5]}" if dupes else ""))
         mod_file = None
     else:
@@ -912,7 +897,8 @@ def build(analysis_dir, plan, out_dir=None, name=None, run_audit=True, verbose=T
         # (BioWare ERF doc), not in a file, so it is carried over from the original .mod
         loc_count, loc_bytes = n.erf_description_block(module_path) if erf else (0, b"")
         n.write_erf_stream(mod_file, [(r, e, len(d), (lambda d=d: d)) for r, e, d in packed], "MOD ", loc_count,
-                           loc_bytes, strref=erf.strref if erf else 0xFFFFFFFF)
+                           loc_bytes, strref=erf.strref if erf else 0xFFFFFFFF,
+                           version="V1.1" if nwn2 else "V1.0")
         # the .mod's hash, so "Add to game folders" (nwn_install) can tell it is still exactly what this build wrote
         log["mod_sha256"] = n.sha256_file(mod_file)
     skipped = json.loads(dict(db.execute("SELECT key, value FROM meta").fetchall()).get("skipped_files") or "[]")
@@ -1057,7 +1043,7 @@ def _compile_sources(db, target, own):
     own: names (lower case) of the scripts being compiled - their clean-folder copy is kept, it is what was edited.
     db: the analysis index; sources come from it, so the haks themselves are not opened. Writes only the temp folder."""
     import tempfile
-    d = tempfile.mkdtemp(prefix="nwn_build_src_")
+    d = n.temp_dir("nwn_build_src_")
     for f in os.listdir(target):
         if f.lower().endswith(".nss"):
             # lower-case names: a hak copy below must replace this file, not sit next to it on a case-sensitive disk
@@ -1238,7 +1224,7 @@ def write_changes_md(path, log):
         L += ["", "## Blueprint changes", "", "| Type | Blueprint | Field | From | To | Placed copies | Result |",
               "|---|---|---|---|---|---|---|"]
         L += [f"| {TYPE_LABEL.get(c['type'], c['type'])} | {c['resref']} | {c['field']} | {c['from']} | {c['to']} | "
-              f"{c.get('placed', 0)}{' (all copies)' if c.get('copies') == 'all' else ''} | {c['status']}{': ' + c['note'] if c.get('note') else ''} |"
+              f"{c.get('placed', 0)} | {c['status']}{': ' + c['note'] if c.get('note') else ''} |"
               for c in log["blueprint_changes"]]
     L += ["", "## Rewritten references", "", "| File | Field | Old | New | Why |", "|---|---|---|---|---|"]
     L += [f"| {c['file']} | {c['field']} | {c['old']} | {c['new']} | {c['why']} |" for c in log["field_changes"]]

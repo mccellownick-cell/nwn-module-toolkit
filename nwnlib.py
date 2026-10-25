@@ -53,10 +53,15 @@ import io
 import os
 import re
 import struct
+import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
 
-ENCODING = "cp1252"  # NWN's on-disk text encoding for western languages
+# NWN1 stores text as cp1252. NWN2 stores it as UTF-8 (and a translated NWN2 module is
+# UTF-8 for certain). decode_text tries UTF-8 first and falls back to the lossless cp1252
+# reader, so one run reads both a translated UTF-8 module and an untranslated cp1252 one
+# without corrupting either. encode_text writes UTF-8, which is what NWN2 expects.
+ENCODING = "utf-8"  # NWN2 on-disk text encoding (NWN1 used cp1252)
 import codecs as _codecs
 
 
@@ -239,13 +244,32 @@ def read_file_inside(folder, relpath):
 
 
 def decode_text(b: bytes) -> str:
-    """Lossless cp1252 decode: every byte sequence survives decode_text -> encode_text unchanged."""
-    return b.decode(ENCODING, "nwn_lossless_dec")
+    """Bytes -> text. UTF-8 when the bytes are valid UTF-8 (NWN2 and any translated module), otherwise the lossless
+    cp1252 reader (NWN1, and stray cp1252 text inside an otherwise UTF-8 module)."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("cp1252", "nwn_lossless_dec")
 
 
 def encode_text(s: str) -> bytes:
-    """Text -> NWN bytes (cp1252). The reverse of decode_text; a character cp1252 can't hold is written as "?"."""
-    return s.encode(ENCODING, "nwn_lossless_enc")
+    """Text -> bytes, the exact inverse of decode_text.
+
+    decode_text prefers UTF-8 and falls back to cp1252, so encoding must mirror that: text cp1252 can hold is written
+    as cp1252 (a private-use char U+F700+byte goes back to that byte, which is how the lossless cp1252 reader carries
+    bytes that have no character), and only text cp1252 cannot hold - Russian, for instance - is written as UTF-8.
+    Without this, every cp1252 file read and then written back would change."""
+    try:
+        out = bytearray()
+        for ch in s:
+            o = ord(ch)
+            if 0xF700 <= o <= 0xF7FF:          # a byte with no cp1252 character, kept losslessly by decode_text
+                out.append(o - 0xF700)
+            else:
+                out += ch.encode("cp1252")
+        return bytes(out)
+    except UnicodeEncodeError:
+        return s.encode("utf-8")
 
 
 # an unsafe resource name contains a path separator (\ /), a character Windows forbids in file names (: * ? " < > |)
@@ -316,6 +340,16 @@ RESTYPES = {
     2070: "xbc", 2071: "wbm", 2072: "mtr", 2073: "ktx", 2074: "ttf", 2075: "sql",
     2076: "tml", 2077: "sq3", 2078: "lod", 2079: "gif", 2080: "png", 2081: "jpg",
     2082: "caf", 2083: "jui", 9996: "ids", 9997: "erf", 9998: "bif", 9999: "key",
+    # NWN2-only types. Taken from nwn-lib-rs resource_type.rs, the authority on the
+    # NWN2 numbering: every id the two tables share agrees, so these 34 are exactly
+    # the additions. Without them a module's .trn/.trx/.gr2/.mdb/.xml files are
+    # reported as "unknown resource type" and the module as damaged.
+    3000: "osc", 3001: "usc", 3002: "trn", 3003: "utr", 3004: "uen", 3005: "ult",
+    3006: "sef", 3007: "pfx", 3008: "cam", 3009: "lfx", 3010: "bfx", 3011: "upe",
+    3012: "ros", 3013: "rst", 3014: "ifx", 3015: "pfb", 3016: "zip", 3017: "wmp",
+    3018: "bbx", 3019: "tfx", 3020: "wlk", 3021: "xml", 3022: "scc", 3033: "ptx",
+    3034: "ltx", 3035: "trx", 4000: "mdb", 4001: "mda", 4002: "spt", 4003: "gr2",
+    4004: "fxa", 4005: "fxe", 4007: "jpg", 4008: "pwc",
 }
 EXT_TO_RESTYPE = {v: k for k, v in RESTYPES.items()}
 
@@ -596,7 +630,8 @@ def write_gff(root: GffRoot) -> bytes:
 
     The struct, field and label tables are built in one walk of the tree (root = struct 0, children after their
     parent); the six blocks are then laid out after the 56-byte header in BioWare's order. Labels are stored once
-    each and cut to 16 bytes. Raises GffError for a resref over 16 bytes or an unknown field type."""
+    each and cut to 16 bytes. Raises GffError for a resref over 32 bytes (NWN2's limit; NWN1 allowed 16) or an
+    unknown field type."""
     structs: List[Tuple[int, int, int]] = []
     fields: List[Tuple[int, int, int]] = []
     labels: List[str] = []
@@ -647,8 +682,8 @@ def write_gff(root: GffRoot) -> bytes:
             field_data.write(struct.pack("<I", len(b)) + b)
         elif t == RESREF:
             b = enc(v)
-            if len(b) > 16:
-                raise GffError(f"resref value too long (max 16): {v!r}")
+            if len(b) > 32:                              # NWN2 allows 32 characters; NWN1 allowed 16
+                raise GffError(f"resref value too long (max 32): {v!r}")
             d = field_data.tell()
             field_data.write(bytes([len(b)]) + b)
         elif t == CEXOLOCSTRING:
@@ -812,6 +847,53 @@ def leaf_to_text(ftype: int, value, tlk=None) -> str:
 MAX_ENTRY_SIZE = 256 << 20
 
 
+# --------------------------------------------------------------------------
+# Finding the pieces of an NWN2 module pack
+# --------------------------------------------------------------------------
+# A module usually sits in a pack folder that also holds its haks and talk tables:
+#     <pack>\modules\<name>.mod
+#     <pack>\hak\*.hak
+#     <pack>\tlk\*.tlk
+# Accepting the pack folder and finding these parts here means one path is enough to start an analysis.
+def resolve_module_path(path: str) -> str:
+    """The module to read. If `path` is a module folder or a .mod it is returned unchanged; if it is a pack folder
+    (no module.ifo of its own, but exactly one .mod under modules/ or in the folder itself) that .mod is returned.
+    Anything else is returned unchanged, so the caller still reports the path it was given."""
+    if not path or not os.path.isdir(path):
+        return path
+    if os.path.isfile(os.path.join(path, "module.ifo")):
+        return path
+    for sub in (os.path.join(path, "modules"), path):
+        if not os.path.isdir(sub):
+            continue
+        mods = sorted(f for f in os.listdir(sub) if f.lower().endswith(".mod")
+                      and os.path.isfile(os.path.join(sub, f)))
+        if len(mods) == 1:
+            return os.path.join(sub, mods[0])
+    return path
+
+
+def guess_user_folder(module_path: str, up: int = 4) -> Optional[str]:
+    """The NWN user folder that belongs to `module_path`, or None.
+
+    Walks up from the module (at most `up` levels) and returns the first folder holding a `hak`, `tlk` or `override`
+    subfolder - the layout of an NWN user folder. For a pack like
+    `...\\Vordan's Hero Creator\\modules\\Vordan's Hero Creator.mod` that is `...\\Vordan's Hero Creator`, so its
+    `hak\\vhc.hak` is found without anyone having to type it. Reads the directory list only; never raises."""
+    try:
+        cur = os.path.dirname(os.path.abspath(module_path))
+        for _ in range(max(1, up)):
+            if any(os.path.isdir(os.path.join(cur, k)) for k in ("hak", "tlk", "override")):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+    except OSError:
+        return None
+    return None
+
+
 @dataclass
 class ErfEntry:
     """One file inside an ERF: name (lower-case, safe), extension, where its bytes start in the ERF, and how many bytes
@@ -834,14 +916,20 @@ class Erf:
     (a 1 GB hak costs almost no RAM).
 
     ERF layout (BioWare ERF doc; E1.0 from neverwinter.nim erf.nim). Header, 160 bytes:
-        0 file type ("MOD ", "HAK ", "ERF ", "NWM ")   4 version ("V1.0" or "E1.0")
+        0 file type ("MOD ", "HAK ", "ERF ", "NWM ")   4 version ("V1.0"/"E1.0" = NWN1, "V1.1" = NWN2)
         8 language count   12 localised-string size   16 entry count   20 offset to localised strings
         24 offset to key list   28 offset to resource list   32 build year (since 1900)   36 build day
         40 description strref   44 reserved (E1.0 keeps a 24-character id here; not used by this reader)
-    Key list entry: resref (16 bytes, NUL-padded), resource id (uint32), type (uint16), unused (uint16)
+    Key list entry, NWN1: resref (16 bytes, NUL-padded), resource id (uint32), type (uint16), unused (uint16)
         = 24 bytes; E1.0 adds a 20-byte SHA-1 of the entry (not checked here) = 44 bytes.
+    Key list entry, NWN2 (V1.1): resref (32 bytes, NUL-padded), resource id (uint32), type (uint32) = 40 bytes.
     Resource list entry: offset, size (uint32 each) = 8 bytes; E1.0 adds compression type and uncompressed size
         = 16 bytes.
+    NWN2 header layouts: the resource list always begins exactly one key entry past the key list, so
+    res_off == key_off + count * 40 identifies the layout. Two are in use and both are accepted:
+        standard - key list at word 24, resource list at word 28 (BioWare files and Vault modules)
+        shifted  - key list at word 20, resource list at word 24 (written by this project's own Erf writer,
+                   e.g. the RU Sunless Citadel)
     path: the .mod/.hak/.erf to read. The file is opened read-only and kept open until close().
     Attributes: entries (list of ErfEntry), bad_names (unsafe names found, see safe_resref), file_type, version.
     Raises ValueError for an empty, non-ERF or damaged file."""
@@ -851,7 +939,7 @@ class Erf:
         hdr = self._fh.read(160)
         self.file_type = hdr[0:4].decode("ascii", "replace")
         self.version = hdr[4:8].decode("ascii", "replace")
-        if self.version not in ("V1.0", "E1.0"):
+        if self.version not in ("V1.0", "E1.0", "V1.1"):
             self._fh.close()
             if not hdr:
                 raise ValueError(f"{os.path.basename(path)} is empty (0 bytes) - not a module or hak")
@@ -859,15 +947,32 @@ class Erf:
                              f"{hdr[0:8].decode('ascii', 'replace')!r}) - damaged or a different kind of file")
         (lcount, lsize, ecount, loc_off, key_off, res_off,
          self.build_year, self.build_day, self.strref) = struct.unpack_from("<9I", hdr, 8)
+        nwn2 = self.version == "V1.1"
         e1 = self.version == "E1.0"
-        rsz = 16 if e1 else 8                            # resource list entry size
-        ksz = 44 if e1 else 24                           # key list entry size
         fsize = self._fsize = os.fstat(self._fh.fileno()).st_size
-        # both tables must fit in the file before anything is allocated: a hostile entry count can't cost memory
-        if res_off + ecount * rsz > fsize or key_off + ecount * ksz > fsize:
-            self._fh.close()
-            raise ValueError(f"{os.path.basename(path)} is damaged: its table lists {ecount} entries, more than the file "
-                             "can hold")
+        if nwn2:
+            # NWN2: 40-byte key entries, 8-byte resource entries, and two header layouts (see the class docstring)
+            rsz, ksz = 8, 40
+            layout = None
+            if 0 <= ecount <= 1_000_000:
+                for name, ko, ro in (("standard", key_off, res_off), ("shifted", loc_off, key_off)):
+                    if (ko >= 160 and ro == ko + ecount * ksz
+                            and ko + ecount * ksz <= fsize and ro + ecount * rsz <= fsize):
+                        layout = (name, ko, ro)
+                        break
+            if layout is None:
+                self._fh.close()
+                raise ValueError(f"{os.path.basename(path)} is damaged: its table lists {ecount} entries and neither "
+                                 "NWN2 ERF header layout fits the file")
+            self.layout, key_off, res_off = layout
+        else:
+            rsz = 16 if e1 else 8                        # resource list entry size
+            ksz = 44 if e1 else 24                       # key list entry size
+            # both tables must fit in the file before anything is allocated: a hostile entry count can't cost memory
+            if ecount > 1_000_000 or res_off + ecount * rsz > fsize or key_off + ecount * ksz > fsize:
+                self._fh.close()
+                raise ValueError(f"{os.path.basename(path)} is damaged: its table lists {ecount} entries, more than "
+                                 "the file can hold")
         self._fh.seek(res_off); rt = self._fh.read(ecount * rsz)
         self._fh.seek(key_off); kt = self._fh.read(ecount * ksz)
         res = []
@@ -882,14 +987,22 @@ class Erf:
         for i in range(ecount):
             base = i * ksz
             # resource names are case-insensitive; the toolkit uses lower case everywhere
-            resref = decode_text(kt[base:base + 16].split(b"\0", 1)[0]).lower()
+            if nwn2:
+                resref = decode_text(kt[base:base + 32].split(b"\0", 1)[0]).lower()
+            else:
+                resref = decode_text(kt[base:base + 16].split(b"\0", 1)[0]).lower()
             if not safe_resref(resref):
                 # never let a name like "..\x" reach a file path; keep a record so the user can be told
                 self.bad_names.append(resref)
                 resref = f"invalid_name_{i}"
-            (rtype,) = struct.unpack_from("<H", kt, base + 20)
-            if rtype == 0xFFFF:                          # an invalid / empty slot (neverwinter.nim skips it too)
-                continue
+            if nwn2:
+                (rtype,) = struct.unpack_from("<I", kt, base + 36)
+                if rtype in (0xFFFF, 0xFFFFFFFF):        # an invalid / empty slot
+                    continue
+            else:
+                (rtype,) = struct.unpack_from("<H", kt, base + 20)
+                if rtype == 0xFFFF:                      # an invalid / empty slot (neverwinter.nim skips it too)
+                    continue
             ext = RESTYPES.get(rtype, f"t{rtype}")
             # key entry i and resource entry i describe the same file
             off, disk, comp, unc = res[i]
@@ -957,6 +1070,30 @@ class Erf:
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
 
 
+def temp_dir(prefix: str) -> str:
+    """A fresh temporary folder that is actually writable.
+
+    Not tempfile.mkdtemp: that creates the folder mode 0700, and on a locked-down Windows machine such a folder can
+    deny writes even to the user who created it - every compile and build run then fails, and the leftovers cannot
+    even be deleted. os.makedirs with a unique name inherits the normal permissions."""
+    import uuid
+    try:
+        root = os.path.join(os.path.dirname(TOOLS_DIR), "nwn_workspace", "_tmp")
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        root = tempfile.gettempdir()
+    for _ in range(50):
+        d = os.path.join(root, f"{prefix}{uuid.uuid4().hex[:10]}")
+        try:
+            os.makedirs(d)
+            return d
+        except FileExistsError:
+            continue
+        except OSError:
+            break
+    return tempfile.mkdtemp(prefix=prefix)
+
+
 def find_tool(name, why=None):
     """A neverwinter.nim program from the toolkit's tools folder (or PATH) that can be run, or None.
 
@@ -987,7 +1124,7 @@ def erf_tool_extract(erf_path, filename):
     exe = find_tool("nwn_erf")
     if not exe:
         return None
-    d = tempfile.mkdtemp(prefix="nwn_erf_")
+    d = temp_dir("nwn_erf_")
     try:
         subprocess.run([exe, "-x", "-f", os.path.abspath(erf_path), filename], cwd=d, capture_output=True, timeout=600)
         p = os.path.join(d, filename)
@@ -1001,53 +1138,85 @@ def erf_tool_extract(erf_path, filename):
         rmtree_force(d, ignore_errors=True)
 
 
+def erf_version(path) -> Optional[str]:
+    """The archive version of a .mod/.hak/.erf ("V1.0", "E1.0", "V1.1"), or None when the file is not one.
+
+    V1.1 is the NWN2 layout (40-byte key entries, 32-character resrefs); V1.0/E1.0 are NWN1. Builds and hak rebuilds
+    use this to write back the same family they read."""
+    try:
+        with open(path, "rb") as fh:
+            hdr = fh.read(8)
+    except OSError:
+        return None
+    if len(hdr) >= 8 and hdr[:4] in (b"MOD ", b"HAK ", b"ERF ", b"NWM ", b"SAV "):
+        return hdr[4:8].decode("ascii", "replace")
+    return None
+
+
+def is_nwn2_archive(path) -> bool:
+    """True when `path` is an NWN2 archive (ERF V1.1). False for NWN1 archives and for anything else."""
+    return erf_version(path) == "V1.1"
+
+
 def write_erf(path, files: List[Tuple[str, str, bytes]], file_type="MOD ",
-              description: Optional[Dict[int, str]] = None):
-    """Write an ERF V1.0 from bytes held in memory: files = [(resref, ext, data), ...]. A thin wrapper over
+              description: Optional[Dict[int, str]] = None, version="V1.0"):
+    """Write an ERF from bytes held in memory: files = [(resref, ext, data), ...]. A thin wrapper over
     write_erf_stream (same layout and checks); for large archives call that directly with read functions.
 
     path: the file to create (overwritten if it exists; the toolkit's builds pass a path in their own output folder).
     file_type: "MOD ", "HAK ", "ERF "... description: {language id: text} for the localised description.
-    Raises ValueError for a name over 16 characters, an unsafe name or an unknown extension (nothing is written
+    version: "V1.0" (NWN1) or "V1.1" (NWN2 - 40-byte key entries, 32-character names, 32-bit resource type).
+    Raises ValueError for a name over the format's limit, an unsafe name or an unknown extension (nothing is written
     then)."""
     description = description or {}
     # localised strings: int32 language id, uint32 length, text
     loc = b"".join(struct.pack("<iI", k, len(b)) + b for k, b in ((k, encode_text(v)) for k, v in description.items()))
-    write_erf_stream(path, [(r, e, len(b), (lambda b=b: b)) for r, e, b in files], file_type, len(description), loc)
+    write_erf_stream(path, [(r, e, len(b), (lambda b=b: b)) for r, e, b in files], file_type, len(description), loc,
+                     version=version)
 
 
-def write_erf_stream(path, entries, file_type="HAK ", loc_count=0, loc_bytes=b"", progress=None, strref=0xFFFFFFFF):
+def write_erf_stream(path, entries, file_type="HAK ", loc_count=0, loc_bytes=b"", progress=None,
+                     strref=0xFFFFFFFF, version="V1.0"):
     """
-    Write an ERF V1.0 without holding the contents in memory (a 1 GB hak needs ~one file's worth of RAM).
+    Write an ERF without holding the contents in memory (a 1 GB hak needs ~one file's worth of RAM).
     entries = [(resref, ext, size, read_fn)] where read_fn() returns that file's bytes.
     loc_count/loc_bytes: the description strings block copied raw from an existing ERF (kept as-is).
     progress: optional callback progress(done, total) after each entry. strref: the description strref to keep.
+    version: "V1.0" for NWN1, "V1.1" for NWN2. NWN2 keeps 32-character names in 40-byte key entries with a 32-bit
+    resource type; NWN1 uses 16-character names in 24-byte entries. Header fields sit in the same slots either way,
+    so the file stays readable by both the game and every standard reader.
     path is created (overwritten if it exists); the hak editor writes to a temporary name and renames it on success.
     Returns [sha256 hex of each entry, in order]. Raises ValueError on a bad name or a size mismatch.
     """
     import hashlib
+    import datetime
+    nwn2 = str(version).upper() == "V1.1"
+    key_size = 40 if nwn2 else 24
+    name_len = 32 if nwn2 else 16
     nent = len(entries)
     loc_off = 160
     key_off = loc_off + len(loc_bytes)
-    res_off = key_off + nent * 24
+    res_off = key_off + nent * key_size
     data_off = res_off + nent * 8
     keys, reslist = io.BytesIO(), io.BytesIO()
     pos = data_off
     # first pass: the tables, from the sizes the caller promises (no data read yet), so they can be written first
     for i, (resref, ext, size, _fn) in enumerate(entries):
-        if len(resref) > 16:
-            raise ValueError(f"'{resref}.{ext}': resource names are limited to 16 characters")
+        if len(resref) > name_len:
+            raise ValueError(f"'{resref}.{ext}': resource names are limited to {name_len} characters")
         if not safe_resref(resref):
             raise ValueError(f"unsafe resource name: {resref!r}")
         if ext not in EXT_TO_RESTYPE:
             raise ValueError(f"'{resref}.{ext}': unknown file type .{ext}")
-        keys.write(encode_text(resref).ljust(16, b"\0") + struct.pack("<IHH", i, EXT_TO_RESTYPE[ext], 0))
+        if nwn2:
+            keys.write(encode_text(resref).ljust(32, b"\0") + struct.pack("<II", i, EXT_TO_RESTYPE[ext]))
+        else:
+            keys.write(encode_text(resref).ljust(16, b"\0") + struct.pack("<IHH", i, EXT_TO_RESTYPE[ext], 0))
         reslist.write(struct.pack("<2I", pos, size))
         pos += size
-    import datetime
     now = datetime.date.today()
     # header fields in the order listed in the Erf docstring; build date = today; 116 reserved zero bytes make it 160
-    header = (file_type.ljust(4)[:4].encode("ascii") + b"V1.0" +
+    header = (file_type.ljust(4)[:4].encode("ascii") + (b"V1.1" if nwn2 else b"V1.0") +
               struct.pack("<9I", loc_count, len(loc_bytes), nent, loc_off, key_off, res_off,
                           now.year - 1900, now.timetuple().tm_yday, strref) + b"\0" * 116)
     shas = []
@@ -1355,7 +1524,7 @@ def base_game_names(nwn_root) -> set:
     set, not found, or has no readable key file: a few loose files are not "the base game", and treating them as
     such would make every base-game resource look missing. Read-only."""
     bg = BaseGame(nwn_root)
-    return bg.names() if bg.keys_read else set()
+    return bg.names() if (bg.keys_read or bg.zips_read) else set()
 
 
 class BaseGame:
@@ -1365,12 +1534,18 @@ class BaseGame:
     nwn_root: the game install folder (None or a missing folder gives an empty index). language: the lang/ subfolder
     (the game's default is "en"). Only the key files are read up front; a BIF's table is read the first time
     something in it is asked for. Attribute keys_read: how many key files were read. Read-only: the game install is
-    never written. Damaged key files, and key files of a version this reader doesn't know, are skipped."""
+    never written. Damaged key files, and key files of a version this reader doesn't know, are skipped.
+
+    NWN2 has no KEY/BIF at all: its base resources are 82 .zip archives in Data/ (2DA.zip, Templates.zip,
+    Scripts.zip, ...), each holding real file names under a folder prefix ("Templates/agarwood.UTR"). Those are
+    indexed the same way, so a base-game blueprint or 2da counts as present. Attribute zips_read: how many archives
+    were indexed."""
 
     def __init__(self, nwn_root, language="en"):
         self.root = nwn_root
         self.index = {}   # "resref.ext" -> (bif path or None, entry number, None) or ("file", path)
         self.keys_read = 0
+        self.zips_read = 0
         if not nwn_root or not os.path.isdir(nwn_root):
             return
         self.lang_root = os.path.join(nwn_root, "lang", language)
@@ -1391,6 +1566,9 @@ class BaseGame:
                 self.keys_read += 1
             except (ValueError, struct.error, OSError):
                 pass
+        if not keys:
+            # NWN2: no key file, so index the Data/*.zip resource packs instead
+            self._read_zip_index()
         for d in (os.path.join(nwn_root, "ovr"), os.path.join(self.lang_root, "data", "ovr")):
             if os.path.isdir(d):
                 for fn in os.listdir(d):
@@ -1428,6 +1606,37 @@ class BaseGame:
             # A name whose BIF is not in the table is still a name the game lists; get() returns None for it.
             bi, ri = rid >> 20, rid & 0xFFFFF
             self.index[f"{rr}.{RESTYPES.get(rt, f't{rt}')}"] = (bifs[bi] if bi < len(bifs) else None, ri, None)
+
+    def _read_zip_index(self):
+        """Add every resource name held in the install's Data/*.zip packs (the NWN2 layout) to the index.
+
+        Entries carry a folder prefix ("Templates/agarwood.UTR"), so the name is the basename. The archives are read
+        in name order and a later one replaces an earlier copy of the same name, which matches the game's
+        base -> X1 -> X2 -> patch order closely enough for "does the game have this name?" checks. Only the zip
+        central directory is read here; an entry's bytes are read by get() on demand."""
+        import zipfile
+        data = os.path.join(self.root, "Data")
+        if not os.path.isdir(data):
+            data = os.path.join(self.root, "data")
+        if not os.path.isdir(data):
+            return
+        packs = sorted(fn for fn in os.listdir(data) if fn.lower().endswith(".zip"))
+        for fn in packs:
+            path = os.path.join(data, fn)
+            try:
+                with zipfile.ZipFile(path) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        base = info.filename.rsplit("/", 1)[-1]
+                        if "." not in base:
+                            continue
+                        resref, ext = base.rsplit(".", 1)
+                        if resref and ext:
+                            self.index[f"{resref.lower()}.{ext.lower()}"] = ("zip", path, info.filename)
+                self.zips_read += 1
+            except (OSError, zipfile.BadZipFile):
+                continue
 
     def names(self):
         """Every "resref.ext" the installed game provides (a new set)."""
@@ -1468,6 +1677,13 @@ class BaseGame:
         if e[0] == "file":
             with open(e[1], "rb") as fh:
                 return fh.read()
+        if e[0] == "zip":
+            import zipfile
+            try:
+                with zipfile.ZipFile(e[1]) as zf:
+                    return zf.read(e[2])
+            except (OSError, KeyError, zipfile.BadZipFile):
+                return None
         bif, ri, _ = e
         if bif is None:
             return None

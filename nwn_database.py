@@ -308,7 +308,8 @@ def read_path(path):
             raise ValueError("pick a database folder, or a .sqlite3 / .sqlite / .db / .dbf / .sql file")
         folder, files = os.path.dirname(path), [path]
     snap = dict(folder=folder, loaded=time.strftime("%Y-%m-%d %H:%M"), files=[], campaign={}, tables={})
-    tmp = tempfile.mkdtemp(prefix="nwn_db_")
+    import nwnlib as _nl            # local: keeps nwnlib out of this module's import order
+    tmp = _nl.temp_dir("nwn_db_")
     try:
         for f in files:
             st = os.stat(f)

@@ -66,9 +66,59 @@ def main(argv=None):
     ap.add_argument("--budget", type=int, help="seconds per run: stop cleanly and checkpoint; run again to resume "
                     "(for sandboxes that kill long jobs). Prints CHECKPOINT when more runs are needed")
     ap.add_argument("--no-json", action="store_true", help="skip per-file JSON (faster, smaller)")
+    ap.add_argument("--list", action="store_true", help="campaign target: list its modules and journal only, "
+                    "analyse nothing")
+    ap.add_argument("--no-export", action="store_true", help="campaign target: skip the per-module HTML reports")
     ap.add_argument("--progress", action="store_true", help="print machine-readable progress lines (used by the dashboard)")
     ap.add_argument("--version", action="version", version=f"NWN Module Toolkit {nwn_dashboard.VERSION}")
     a = ap.parse_args(argv)
+    # A pack folder (modules/<name>.mod plus hak/ and tlk/) is accepted: find its module.
+    # The folders to search for haks and the base talk table come from the command line first, then from the
+    # dashboard's saved settings, and only then from this module's own neighbourhood - so a saved install folder
+    # is never overridden by a guess.
+    import nwnlib
+    a.module = nwnlib.resolve_module_path(a.module)
+    # A campaign is neither a module nor a hak: Campaigns/<name>/ holds Campaign.cam (its module list) and a
+    # campaign-wide module.jrl. Analyse the modules it names instead of the folder itself.
+    if os.path.isdir(a.module):
+        try:
+            import nwn_campaign
+            campaigns = nwn_campaign.find_campaigns(a.module)
+        except Exception:  # noqa - campaign support is optional; fall through to the module path
+            campaigns = []
+        if campaigns:
+            st = nwn_dashboard.settings()
+            print(f"Campaign target: {a.module}")
+            for c in campaigns:
+                print(f"  campaign: {os.path.basename(os.path.normpath(c))}")
+            res = nwn_campaign.analyse(a.module,
+                                       nwn_root=a.nwn_root or st.get("nwn_root"),
+                                       nwn_user=a.nwn_user or st.get("nwn_user"),
+                                       deep=not a.list, export=not a.no_export)
+            for c in res["campaigns"]:
+                print(f"\n{c['display_name'] or c['name']}: {c['journal_entries']} journal entries, "
+                      f"{len(c['modules_resolved'])} module(s)")
+                for m in c["modules_resolved"]:
+                    state = "found" if m["found"] else "MISSING"
+                    extra = ""
+                    if m.get("analysis"):
+                        extra = f" -> analysis '{m['analysis']['name']}'" + (
+                            f", report {os.path.basename(m['report_html'])}" if m.get("report_html") else "")
+                    elif m.get("analysis_error"):
+                        extra = f" -> {m['analysis_error']}"
+                    print(f"  {m['name']}: {state}{extra}")
+                print(f"  campaign report: {os.path.join(c['campaign_dir'], 'campaign.md')}")
+            return 0
+    # A folder that is not a module: no module.ifo and no nasher.cfg. Indexing a game or user data folder this way
+    # merges files from every module installed there, and because their custom talk tables are not loaded almost
+    # every text reference then looks broken - so say it plainly instead of letting the numbers look real.
+    if os.path.isdir(a.module) and not os.path.isfile(os.path.join(a.module, "module.ifo")) \
+            and not os.path.isfile(os.path.join(a.module, "nasher.cfg")):
+        print(f"WARNING: {a.module} is a folder, but it holds no module.ifo - so it is not an unpacked module.\n"
+              "         Analysing a game or user data folder mixes files from many modules; their custom talk tables\n"
+              "         are not loaded, so thousands of appear-broken text references are expected.\n"
+              "         Point the command at a .mod (or at the folder it was unpacked into), for example:\n"
+              '           python nwn_analyse.py "N:\\Users\\<you>\\Documents\\Neverwinter Nights 2\\modules\\<name>.mod"')
     gone = [p for p in [a.module] + a.hak + ([a.tlk] if a.tlk else []) if not os.path.exists(p)]
     if gone:
         print(f"Not found: {gone[0]} - check the path (put it in quotes if it contains spaces)")
@@ -99,6 +149,7 @@ def _run(a, name, out):
     import json
     import time
     import nwn_dashboard
+    import nwnlib
     st = nwn_dashboard.settings()
     marker = os.path.join(out, nwn_dashboard.INCOMPLETE)   # unfinished until the analysis pass completes
     if not os.path.exists(marker):          # a resumed --budget run keeps the first run's marker (and start time)
@@ -112,7 +163,8 @@ def _run(a, name, out):
         # [] would mean "no override folder", which only the clean-build audit wants.
         r = nwn_index.run_index(a.module, a.hak, None, a.tlk, out, write_json=not a.no_json,
                                 nwn_root=a.nwn_root or st["nwn_root"] or None,
-                                nwn_user=a.nwn_user or st["nwn_user"] or None, time_budget=a.budget)
+                                nwn_user=(a.nwn_user or st["nwn_user"]
+                                          or nwnlib.guess_user_folder(a.module)), time_budget=a.budget)
         if r is None:
             print("CHECKPOINT - run the same command again to continue")
             return 3

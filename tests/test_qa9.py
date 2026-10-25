@@ -344,13 +344,20 @@ def test_facts_mcp(tmp, out):
     e = f.exists("QS_ANTS")
     check("exists knows script constants", any(m["kind"] == "constant" and m["value"] == "3" for m in e["matches"]), e)
     t0 = time.time()
+    _pipe_ok = True
     try:
         f.grep(r"(x+x+)+y", timeout=3); ok_ = False        # backtracks exponentially on the 320-x line
     except ValueError as ex:
         ok_ = "longer than" in str(ex)
+    except (PermissionError, OSError) as _ex:
+        # the parallel grep needs a multiprocessing Queue, i.e. a named pipe this machine may forbid
+        ok_ = None; _pipe_ok = False
+        skip("a pathological grep pattern is stopped by its time limit (no hang)",
+             f"cannot open the multiprocessing pipe the parallel grep uses ({_ex})")
     dt = time.time() - t0
-    check("a pathological grep pattern is stopped by its time limit (no hang)", ok_)
-    h.timing("a grep stopped by a 3 s time limit returns within 15 s", dt, 15)
+    if _pipe_ok:
+        check("a pathological grep pattern is stopped by its time limit (no hang)", ok_)
+        h.timing("a grep stopped by a 3 s time limit returns within 15 s", dt, 15)
     try:
         nwn_facts.Facts(os.path.abspath(out), workspace=os.path.join(tmp, "elsewhere")); ok_ = False
     except ValueError:
@@ -835,11 +842,8 @@ def test_ncs(tmp):
     check("compiled scripts: very long text constants don't break the check",
           nwn_ncs._explained(long_, {"a", "b"}, {}) and not nwn_ncs._explained(long_ + "c", {"a", "b"}, {}))
     text, err = nwn_ncs.disassemble(os.path.join(mdir, "same.ncs"))
-    # with a real nwn_asm installed (tools/ is git-ignored, so only on a builder's machine) the stand-in .ncs may be
-    # refused by it: then a clear error message is the right answer too
     check("compiled scripts: no nwn_asm in tools -> a clear message, not a crash",
-          (text is None and "nwn_asm" in err) if not n.find_tool("nwn_asm") else bool(text) or (text is None and bool(err)),
-          err)
+          (text is None and "nwn_asm" in err) if not n.find_tool("nwn_asm") else bool(text), err)
 
 
 def test_ncs_precedence(tmp):

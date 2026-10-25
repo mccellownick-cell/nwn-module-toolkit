@@ -44,8 +44,14 @@ def issue_sig(detail):
 
 
 def sig_matches(stored, detail):
-    """Does an accepted issue's stored signature still match this detail? (older signatures held the whole text)"""
-    return str(stored or "").split("; used by ")[0] == issue_sig(detail)
+    """Does an accepted issue's stored signature still match this detail? (older signatures held the whole text)
+
+    An empty signature matches any detail: one acceptance then covers every variant of an issue for that object,
+    which is what marking a whole group "by design" means (an area file alone can raise dozens of broken_strref
+    notes for different fields)."""
+    if not stored:
+        return True
+    return str(stored).split("; used by ")[0] == issue_sig(detail)
 
 
 def all_issues(report, compile_result=None):

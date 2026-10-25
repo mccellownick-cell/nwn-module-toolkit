@@ -1,75 +1,134 @@
-# NWN Module Toolkit 1.5.5
+﻿# NWN2 Module Toolkit
 
-Analyse, understand and clean up Neverwinter Nights: Enhanced Edition modules - safely.
+**English** | [Русский](README.ru.md)
+A local, offline toolkit for **Neverwinter Nights 2** modules: it indexes a module,
+analyses it, and gives you a browser dashboard for everything that is tedious by hand -
+references, haks, 2DA tables, localisation, campaigns and world maps.
 
-- **Understand a module**: every file, script, conversation, quest, faction, variable, campaign database and hak, with
-  what uses what and how much would break if it changed (impact levels).
-- **Find problems**: missing scripts and resources, broken quests, typos in variable names, faction mistakes,
-  performance risks for persistent worlds - each with a plain *How to fix* line.
-- **Clean up**: remove what nothing uses, merge duplicates, slim haks to what the module reaches, then build a NEW clean
-  module and audit it against the original.
-- **Play-test**: a log monitor that explains each game/server error and links it to the script behind it.
+Everything runs on your machine. No module data is uploaded anywhere.
 
-Runs on Windows, macOS and Linux.
+---
 
-## Why I made this
-By day I work in cyber security risk. In my own time I tinker with Neverwinter Nights, and I'm part of the community behind Mystara: Black Horizon, a large persistent world where I look after the server, keeping it up and keeping it secure.
+## What it does
 
-NWN time is hard to find around work, family and sport, so I don't build this in big sessions. I fit it in here and there. But I'm still very much invested in the game and the people who play it.
+* **Analysis** - indexes every resource in a module (or a whole campaign) and reports real
+  problems: missing scripts and conversations, broken strrefs, blueprints that are
+  referenced but absent, stale 2DA copies, unsafe names, duplicate assets.
+* **Dashboard** - one local web page (`http://127.0.0.1:8765`) with a tab per task area,
+  built from the analysis of the module you pick.
+* **Haks** - list, extract, slim and rebuild `.hak` files; compare copies; find duplicates.
+* **2DA editor** - read, edit and validate 2DA tables, compare them with the installed game.
+* **Localisation** - measure how much text a module carries and how much of it is already
+  translated (journal, dialogues, script strings), plus a glossary checker for terms,
+  markup, placeholders and gender forms.
+* **Module to campaign** - performs the Campaign Editor steps: creates `Campaigns/<name>/`,
+  moves the journal there, points `module.ifo` at the campaign, with `.bak` copies.
+* **World map** - preview and edit `.wmp` files: points, icons, sizes, coordinates.
+* **Assistant** (optional) - a chat panel that can read a local analysis and propose edits.
 
-Running a server that has grown for years, I kept hitting the same problem. The module holds thousands of scripts, duplicate items, and haks that players have to download and that are bigger than they need to be. Nobody can say for sure what's still in use. The toolset can't answer "what uses this?" across a whole module and its haks, and deleting the wrong thing can break a live server.
+---
 
-So I built the toolkit the way I'd run a security assessment:
+## Requirements
 
-- Read everything, never touch the original.
-- Back every finding with evidence: the file, field or script line it came from.
-- Treat every clean-up as a controlled change: plan it, build a new copy, and audit that copy against the original before anyone uses it.
+* Windows (the paths and the dashboard starter assume it), Python 3.10+
+* No third-party Python packages: the toolkit ships pure standard library code
+* Optional: an NWN2 installation, for talk tables and base-game comparison
+* Optional: a DeepSeek API key, only if you want the in-page assistant
 
-I leveraged AI to help me rapidly build and develop the toolkit - it's how a project like this fits into the time I have.
+---
 
-**Your originals are only read, except by five buttons you press yourself.** Everything else the toolkit writes goes
-into its own `nwn_workspace` folder. The five exceptions: **Add to game folders** (Build & audit, after typing ADD)
-copies the finished build's `.mod` and rebuilt haks into your modules and hak folders under names that don't exist
-yet, never replacing a file, and **Undo** removes only those files if unchanged; **Add to hak folder** (Hak editor)
-adds a rebuilt hak under a new name next to the original and never replaces a file; **Move** (Modules folder page)
-moves the module copies you ticked into an archive folder, never deletes, and **Undo** moves them back; **Restore**
-(Hak editor, only for backups made by older versions) backs up the current hak before replacing it; **Extract** (Hak
-editor) writes only into an empty or new folder you choose. Rebuilt modules and haks always get new names, so copying
-them into your game folders can never replace an original. **Install / Update** writes only the install folder you
-choose.
+## Quick start
 
-## Install
-Step-by-step instructions, with download links, are in **`INSTALL.md`** (about ten minutes). In short:
-1. Install Python 3.8 or newer from python.org (Windows: tick *Add python.exe to PATH*).
-2. Unzip this folder anywhere and start it: Windows `run_dashboard.bat`, macOS `run_dashboard.command`, Linux
-   `python3 nwn_dashboard.py`.
-3. On the Modules page press **Install** (a folder of its own is suggested; an older copy's work can come along).
-   Later versions find the install and **Update** it: only the program is swapped, your work stays.
-4. Optional but recommended: the official script compiler (INSTALL.md step 5, or `tools/README.txt`).
+```
+git clone <this repository>
+cd nwn-module-toolkit-1.5.3-nwn2
 
-No other installs are needed - the toolkit uses only Python's standard library.
+python nwn_analyse.py "D:\Neverwinter Nights 2\modules\MyModule.mod"
+python run_dashboard.py
+```
 
-## First steps
-1. **Modules** page: pick your module (folder or `.mod`), press **Quick scan** (seconds), then **Analyse**.
-2. Read **Overview** and **Issues** (every issue has a *How to fix* line).
-3. Tick what to remove on **Safe to delete** / **Duplicates**, then **Build & audit**.
-4. Start the **Log monitor** while you play-test the clean module.
+Then open `http://127.0.0.1:8765`.
 
-The full manual is in the dashboard (**Help**) and in `docs/MANUAL.md`.
+A whole campaign works too - point the analyser at the campaign folder:
 
-## Check it works on your computer
-`python tests/run_all.py` (macOS / Linux: `python3 tests/run_all.py`) runs every test suite and prints one table; its
-last line must say that all suites passed. Each suite can also be run on its own (for example
-`python tests/test_quests.py`) and ends with "N/M checks passed".
+```
+python nwn_analyse.py "D:\Neverwinter Nights 2\Campaigns\MyCampaign"
+```
 
-## Credits
-Created by **Sporaxis** - contact: sporaxis@gmail.com.
+Results land in `nwn_workspace/<name>/` (index, report.json, CSV reports, conversations).
+The dashboard reads exactly those files.
 
-Contributors: **Sporaxis** (author) and **Anthropic: Claude** (code).
+---
 
-The code was developed within Claude, Anthropic's AI assistant. The toolkit itself uses no AI: it runs entirely on
-your computer and makes no internet connections.
+## The dashboard tabs
 
-## Licence
-MIT - see `LICENSE`. The neverwinter.nim programs described in `tools/README.txt` are separate (MIT licence) and not
-included. Neverwinter Nights is a trademark of its owners; this toolkit contains no game content.
+| Tab | What you get |
+|---|---|
+| Analysis | summary, issues by severity, files, areas, creatures |
+| Details | per-object reports and CSV exports |
+| Haks | hak inventory, extraction, slimming |
+| 2DA | table editor and game comparison |
+| Localisation | translation coverage and the glossary checker |
+| Map | world map preview and point editing |
+| Blueprints | palette browser and duplicate finder |
+| Build | rebuild a module from a folder |
+| Assistant | optional chat, see below |
+| Settings | paths, external tools, report options |
+
+---
+
+## Assistant (bring your own key)
+
+The assistant is optional and **off by default**. If you want it, put your key in
+`nwn_workspace/harness.json`:
+
+```json
+{ "api_key": "<your key>" }
+```
+
+Notes:
+
+* the key is read only by the local server; it is never sent to the browser and never
+  written into an exported report;
+* `harness.json` is in `.gitignore` - do not commit it;
+* without a key the rest of the toolkit works normally.
+
+To use the regular DeepSeek chat instead, the Assistant tab links to
+<https://chat.deepseek.com/> and opens it in a new tab - the site cannot be embedded in a
+frame, so a link is the honest way to offer it.
+
+---
+
+## Data and privacy
+
+* `nwn_workspace/` holds analysis output and is **ignored by git** - it can contain file
+  names and text from modules you do not own.
+* Nothing leaves your machine except the optional assistant request, which contains only
+  what you type plus a short summary of the open analysis.
+* No API keys, no tokens, no credentials are stored in this repository.
+
+---
+
+## Testing
+
+```
+python tests/run_all.py
+```
+
+The suite covers the library, the analyser, the 2DA and hak tooling, the map reader and the
+dashboard: 20 suites, 1300+ checks.
+
+---
+
+## Contributing
+
+* keep the standard library only;
+* run `python tests/run_all.py` before a pull request;
+* never commit keys - check with
+  `git diff --cached --name-only` and search the staged files for `sk-`, `api_key`, `token`.
+
+---
+
+## License
+
+See the license file shipped with the toolkit.

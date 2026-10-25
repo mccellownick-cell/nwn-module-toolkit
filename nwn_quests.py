@@ -1262,6 +1262,13 @@ class QuestInference:
             if not ok:
                 what = "nothing ever sets it" if not set_values else f"it is only ever set to {', '.join(set_values)}"
                 text = f"{script} (line {f['line']}) checks {cmpop} {v}, which can never be true: {what}"
+                # X2_L_* (and the other X2_ switches) come from x2_inc_switches: the base-game AI reads them, and a
+                # module that does not switch that behaviour on never sets them. Dead by design, not broken.
+                if str(key).upper().startswith(("X2_L_", "X2_")):
+                    problems.append(dict(level="info", script=script,
+                                         text=text + " - a standard BioWare switch (x2_inc_switches) that this module "
+                                                     "never uses"))
+                    continue
                 if not self._is_live(script, f):
                     # dead code can't stop a player finishing the quest - worth tidying, not a broken quest
                     problems.append(dict(level="info", text=text + f" - but {script} is not used by the module (dead code)",
