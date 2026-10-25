@@ -144,3 +144,19 @@ python tests/run_all.py
 ## Лицензия
 
 См. файл лицензии в поставке тулкита.
+---
+
+## Быстрый старт за три шага
+
+1. Скачайте архив из [релиза v1.5.3-ru.1](https://github.com/mccellownick-cell/nwn-module-toolkit/releases/tag/v1.5.3-ru.1)
+   (`nwn-module-toolkit-1.5.3-ru.1.zip`) и распакуйте в любую папку.
+2. Запустите `install.bat` — он проверит Python и подготовит `nwn_workspace`.
+3. Запустите `run_dashboard.bat` и откройте <http://127.0.0.1:8765>.
+
+Анализ модуля из командной строки:
+
+```
+python nwn_analyse.py "D:\Neverwinter Nights 2\modules\МойМодуль.mod"
+```
+
+Подробнее — [INSTALL.md](INSTALL.md) и [docs/GUIDE.ru.md](docs/GUIDE.ru.md).
