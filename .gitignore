@@ -34,3 +34,5 @@ venv/
 .idea/
 Thumbs.db
 desktop.ini
+# release archives are attached to GitHub releases, not tracked
+*.zip
