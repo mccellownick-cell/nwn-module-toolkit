@@ -835,8 +835,11 @@ def test_ncs(tmp):
     check("compiled scripts: very long text constants don't break the check",
           nwn_ncs._explained(long_, {"a", "b"}, {}) and not nwn_ncs._explained(long_ + "c", {"a", "b"}, {}))
     text, err = nwn_ncs.disassemble(os.path.join(mdir, "same.ncs"))
+    # with a real nwn_asm installed (tools/ is git-ignored, so only on a builder's machine) the stand-in .ncs may be
+    # refused by it: then a clear error message is the right answer too
     check("compiled scripts: no nwn_asm in tools -> a clear message, not a crash",
-          (text is None and "nwn_asm" in err) if not n.find_tool("nwn_asm") else bool(text), err)
+          (text is None and "nwn_asm" in err) if not n.find_tool("nwn_asm") else bool(text) or (text is None and bool(err)),
+          err)
 
 
 def test_ncs_precedence(tmp):

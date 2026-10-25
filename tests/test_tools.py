@@ -574,17 +574,19 @@ def test_rename(tmp, mod, out, rep):
     # undo refuses when a file was edited after the change
     r7 = RF.find(d, "IT_SOLD", "exact", True)
     res7 = RF.apply(d, "IT_SOLD", "IT_SOLD2", [h["id"] for h in r7["hits"]], "exact", True)
-    with open(os.path.join(d, "edits", "t_look.nss"), "a") as fh:
+    # newline="": no line-ending translation, so removing the edit below gives back the exact bytes the rename wrote
+    # (on Windows text mode would turn every \n into \r\n and the undo would see a changed file)
+    with open(os.path.join(d, "edits", "t_look.nss"), "a", newline="") as fh:
         fh.write("// my later edit\n")
     try:
         RF.undo(d, res7["id"]); lost = True
     except ValueError:
         lost = False
     check("undo: refused when the file was edited afterwards (your later edit is kept)", not lost
-          and open(os.path.join(d, "edits", "t_look.nss")).read().endswith("// my later edit\n"))
-    with open(os.path.join(d, "edits", "t_look.nss"), "r") as fh:
+          and open(os.path.join(d, "edits", "t_look.nss"), newline="").read().endswith("// my later edit\n"))
+    with open(os.path.join(d, "edits", "t_look.nss"), "r", newline="") as fh:
         txt = fh.read()
-    with open(os.path.join(d, "edits", "t_look.nss"), "w") as fh:
+    with open(os.path.join(d, "edits", "t_look.nss"), "w", newline="") as fh:
         fh.write(txt.replace("// my later edit\n", ""))
     RF.undo(d, res7["id"])
     os.remove(os.path.join(d, "edits", "town.git"))

@@ -75,9 +75,25 @@ def _missing_include(i):
 
 
 def _missing_blueprint(i):
+    """Advice for missing_blueprint. Reads the notes nwn_analysis adds to the detail: "placed cop..." (copies exist in
+    areas) and "Found elsewhere:" (the file is in the toolset's temp0, the development folder or an unlisted hak)."""
     d = i.get("detail", "")
     nm = _first(d, "the blueprint")
-    return (_missing_hint(d) + f"Otherwise the script, store or encounter asks for '{nm}', which doesn't exist: create a "
+    stem = nm.rsplit(".", 1)[0]
+    where = ""
+    if "temp0" in d:
+        where = ("The toolset's working folder has it: save the module in the toolset (File > Save) and analyse again. ")
+    elif "which module.ifo does not list" in d:
+        where = ("A hak the module does not list has it: add that hak in Edit > Module Properties > Custom Content, or "
+                 "copy the blueprint into the module. ")
+    elif "development folder" in d:
+        where = ("Your development folder has it, which players don't get: copy it into the module (or its hak). ")
+    copies = ""
+    if "placed cop" in d:
+        copies = (f"Placed copies are not blueprints: in the toolset right-click one of them > Create Blueprint, and give "
+                  f"it the ResRef '{stem}' so the existing calls find it. ")
+    return (_missing_hint(d) + where + copies +
+            f"Otherwise the script, store or encounter asks for '{nm}', which doesn't exist: create a "
             "blueprint with that ResRef, or change the script/store to an existing one (Find & replace finds every use).")
 
 
@@ -196,6 +212,8 @@ FIXES = {
                                 "folder in Settings) and re-analyse, so names stored as talk-table numbers can be checked."),
     "base_game_not_found": lambda i: ("Settings > NWN install folder: choose the folder that contains 'data' (e.g. "
                                       ".../Beamdog Library/00785), then re-analyse."),
+    "toolset_unsaved": lambda i: ("Save the module in the toolset (File > Save), close it, then analyse again - the "
+                                  "analysis reads the saved .mod, not the toolset's working folder."),
     "module_incomplete": lambda i: ("Re-save the module from the toolset (or re-export the .mod) and analyse again. "
                                     "Until then nothing is offered for deletion."),
     "area_tag": _area_tag,

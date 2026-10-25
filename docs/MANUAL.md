@@ -446,6 +446,16 @@ at run time) the first step is to confirm it. The same advice is in `reports/iss
 answers of the facts tool (section 10). Quest problems, variables, tags and performance findings have their own *How
 to fix* lines.
 
+A **missing blueprint** is one that a script creates, or a store, encounter or inventory names, while no blueprint file
+of that name is in the module, a listed hak or the base game. That is what the game loads, so the call creates nothing.
+Two things can make it look wrong:
+- *Placed copies exist.* An item placed in an area is a full copy, not a blueprint. The detail says how many copies
+  there are; to fix it, right-click one in the toolset, choose **Create Blueprint** and keep the same ResRef.
+- *The toolset shows it.* The detail ends **Found elsewhere:** when the file is somewhere the game does not load for
+  players: the toolset's working folder `temp0` (the module was changed and not saved - save it and analyse again; a
+  *toolset_unsaved* warning says so too), a hak the module does not list (add it under *Module Properties > Custom
+  Content*), or your `development` folder.
+
 Some issues are by design. Tick **By design** on an issue and add a note (for example "set by the DM tool at run
 time"). It is hidden (tick *show accepted* to see it again), left out of the counts on the menu and the Overview, and
 stays accepted when you re-analyse. If what the issue says changes, it comes back with *changed since you accepted it*

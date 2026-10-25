@@ -98,6 +98,10 @@ REANALYSE = [
     # Issues page (nwn_minimap.map_checks); the Map page itself draws from the index and needs no re-analysis
     dict(key="map_checks", since="1.5.3",
          what="Area transition checks, missing minimap images and areas set to Underground by mistake on the Issues page"),
+    # missing_bp_notes 1: a missing blueprint's detail counts its placed copies and names where else the file is (the
+    # toolset's temp0, an unlisted hak, the development folder: nwn_index.find_missing_elsewhere); toolset_unsaved
+    dict(key="missing_bp_notes", since="1.5.5",
+         what="Missing blueprints say when placed copies exist and where else the file is; a warning for unsaved toolset work"),
 ]
 
 # --- (a) bringing work across -------------------------------------------------------------------------------

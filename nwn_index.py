@@ -51,7 +51,9 @@ SQLite schema (index.sqlite)
                               base-game names), skipped_files (JSON), tagbased_prefix_unknown (JSON: "script line N"
                               where a tag-based script prefix is set from a non-literal), dynamic_creates (JSON:
                               [script, line, blueprint ext or "*", call] for Create* calls whose blueprint name is a
-                              variable or a function result). Later phases may add keys of their own.
+                              variable or a function result), found_elsewhere (JSON: {"name.ext": [place, ...]} for
+                              blueprints no loaded source holds but the toolset's temp0, the development folder or an
+                              unlisted hak does - see find_missing_elsewhere). Later phases may add keys of their own.
     sources(id, path, kind, priority)    one row per folder/archive read (see above)
     files(id, source_id, relpath, resref, ext, kind, size, sha256, content_hash, status, error, node)
                               one row per file in every source. relpath: path inside the folder, or the ERF entry
@@ -1602,6 +1604,7 @@ class Indexer:
             elif t == "2da" and f"{nm}.2da" in self.resources:
                 nd["in_module"] = 1
         self.validate()
+        self.find_missing_elsewhere()
         nwn_progress.stage("post", "Linking: writing the dependency graph")
         self.db.executemany("INSERT INTO nodes VALUES (?,?,?,?,?,?)",
                             [(k, v["type"], v["name"], v["label"], v["file_id"], v["in_module"])
@@ -1627,6 +1630,132 @@ class Indexer:
         if self.base_names:
             return f"{name}.ncs" in self.base_names or f"{name}.nss" in self.base_names
         return name.startswith(BASE_GAME_PREFIXES)
+
+    def find_missing_elsewhere(self):
+        """For blueprints that something spawns, gives or places but no loaded source holds, look where a builder may
+        still have them and record the places in meta found_elsewhere ({"name.ext": ["place", ...]}).
+
+        Why (a tester's report on 1.5.4): items the toolset palette showed were reported as missing blueprints. The
+        game only loads the module, the haks module.ifo lists and the base game, so the error stands; but a builder
+        needs to know where the file is to fix it. Looked at, in this order:
+          - the module's own file that could not be read (files.status='error'), or one whose name differs only by
+            spaces or was longer than 16 characters (the game cuts a resource name at 16);
+          - the toolset's working folder <modules>/temp0 when it holds THIS module (same Mod_Name): the toolset works
+            there and writes the .mod only on Save, so a blueprint made since the last save is only there. When that
+            folder is newer than the .mod, a toolset_unsaved warning is recorded as well;
+          - <user>/development (the game loads it, but players don't have it);
+          - haks in the hak folders that module.ifo does NOT list (only their key tables are read).
+        Read-only: lists folders and reads ERF key tables and one module.ifo; never raises (a place that can't be
+        read is skipped)."""
+        missing = sorted(nd["name"] for nd in self.nodes.values()
+                         if nd["type"] == "blueprint" and not nd["in_module"])
+        if not missing:
+            return
+        want = set(missing)
+        found = defaultdict(list)
+        meta = dict(self.db.execute("SELECT key, value FROM meta").fetchall())
+
+        # 1. the module itself: a file that could not be read, or a near-identical name
+        try:
+            for rr, ext, err in self.db.execute(
+                    "SELECT f.resref, f.ext, f.error FROM files f JOIN sources s ON s.id=f.source_id "
+                    "WHERE s.kind='module' AND f.status='error'"):
+                if f"{rr}.{ext}" in want:
+                    found[f"{rr}.{ext}"].append(f"the module has it but it could not be read ({err})")
+        except sqlite3.Error:
+            pass
+        squeezed = defaultdict(list)
+        for key in self.resources:
+            r, _, e = key.rpartition(".")
+            if e in BLUEPRINT_EXTS:
+                squeezed[(re.sub(r"\s+", "", r)[:16], e)].append(key)
+        for name in missing:
+            r, _, e = name.rpartition(".")
+            for key in squeezed.get((re.sub(r"\s+", "", r)[:16], e), []):
+                if key != name:
+                    found[name].append(f"a loaded file is named '{key}' - almost the same name")
+
+        mod_path = meta.get("module_path") or ""
+        nwn_user = meta.get("nwn_user") or ""
+        nwn_root = meta.get("nwn_root") or ""
+
+        def names_in_folder(folder):
+            """Lower-case file names in folder (empty when it can't be listed)."""
+            try:
+                return {fn.lower(): fn for fn in os.listdir(folder)}
+            except OSError:
+                return {}
+
+        # 2. the toolset's working copy of this module (only beside a packed .mod; a module folder IS the working copy)
+        if os.path.isfile(mod_path):
+            mods_dir = os.path.dirname(mod_path)
+            temp = next((os.path.join(mods_dir, fn) for low, fn in names_in_folder(mods_dir).items()
+                         if low == "temp0" and os.path.isdir(os.path.join(mods_dir, fn))), None)
+            listing = names_in_folder(temp) if temp else {}
+            same = False
+            if "module.ifo" in listing:
+                try:
+                    with open(os.path.join(temp, listing["module.ifo"]), "rb") as fh:
+                        ifo = n.read_gff(fh.read())
+                    same = self.text(ifo.get("Mod_Name")) == (meta.get("module_name") or "")
+                except Exception:  # noqa - an unreadable working copy is simply not used
+                    same = False
+            if same:
+                for name in missing:
+                    if name in listing:
+                        found[name].append("the toolset's working folder temp0 (not saved into the .mod yet)")
+                try:
+                    newest = max(os.path.getmtime(os.path.join(temp, fn)) for fn in listing.values())
+                    if newest > os.path.getmtime(mod_path) + 60:
+                        self.issue("warning", "toolset_unsaved", "module",
+                                   f"The toolset's working folder ({temp}) holds this module and has files newer than "
+                                   f"{os.path.basename(mod_path)}: it was changed in the toolset and not saved. This "
+                                   "analysis read the saved .mod, so recent work is not in it")
+                except (OSError, ValueError):
+                    pass
+
+        # 3. the development folder: the game loads it before everything else, but only on this machine
+        if nwn_user:
+            dev = names_in_folder(os.path.join(nwn_user, "development"))
+            for name in missing:
+                if name in dev:
+                    found[name].append("the development folder (only on this computer - players don't have it)")
+
+        # 4. haks that are in the hak folders but not listed in module.ifo. Only the folders this run's settings point
+        # at (the user's and install's hak folder, an nwn.ini [Alias] HAK= of the user folder, and where the loaded haks
+        # are) - not the guessed Documents folders default_hak_dirs adds, so a test or a second install isn't read.
+        loaded_paths = json.loads(meta.get("haks") or "[]")
+        loaded = {os.path.normcase(os.path.abspath(h)) for h in loaded_paths}
+        dirs = [os.path.dirname(os.path.abspath(h)) for h in loaded_paths]
+        for base in (nwn_user, nwn_root):
+            if base:
+                dirs += [ini_aliases(base).get("HAK"), os.path.join(base, "hak")]
+        seen = set()
+        for d in dict.fromkeys(x for x in dirs if x):
+            for low, fn in sorted(names_in_folder(d).items()):
+                p = os.path.normcase(os.path.abspath(os.path.join(d, fn)))
+                if not low.endswith(".hak") or p in loaded or p in seen:
+                    continue
+                seen.add(p)
+                try:
+                    # a OneDrive / cloud placeholder (offline or recall-on-access, Windows file attributes 0x1000 /
+                    # 0x400000) would be downloaded just to read its table: skip it
+                    if getattr(os.stat(os.path.join(d, fn)), "st_file_attributes", 0) & 0x401000:
+                        continue
+                except OSError:
+                    continue
+                try:
+                    erf = n.Erf(os.path.join(d, fn))
+                    try:
+                        for e in erf.entries:
+                            if e.filename in want:
+                                found[e.filename].append(f"hak '{fn}', which module.ifo does not list")
+                    finally:
+                        erf.close()
+                except Exception:  # noqa - a damaged or locked hak is skipped
+                    continue
+        self.db.execute("INSERT OR REPLACE INTO meta VALUES ('found_elsewhere', ?)",
+                        (json.dumps({k: v[:4] for k, v in found.items()}),))
 
     def validate(self):
         """Structural checks that need no compiler.

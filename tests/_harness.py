@@ -47,7 +47,17 @@ for _p in (os.path.join(HERE, "scenarios"), HERE, ROOT):
         sys.path.insert(0, _p)
 
 # ------------------------------------------------------------------------------------------------ isolation
-SESSION = tempfile.mkdtemp(prefix="nwn_test_")
+# A multiprocessing child (nwn_facts.grep runs its search in one) is started on Windows and macOS by re-importing the
+# test file, and so this module: it must reuse its parent's folder, not make one of its own - the grep time-limit test
+# kills that child, whose own atexit cleanup then never ran and its folder was left behind (seen on Windows).
+# NWN_TEST_SESSION = "<pid>|<folder>" of the process that made the folder. multiprocessing.parent_process() can't
+# tell: it is set only after the child has imported the test file. The parent's pid can: a suite started by
+# run_all.py (another process in between) still makes its own folder.
+_owner, _, _folder = os.environ.get("NWN_TEST_SESSION", "").partition("|")
+_CHILD = bool(_folder) and _owner == str(os.getppid())
+SESSION = _folder if _CHILD else tempfile.mkdtemp(prefix="nwn_test_")
+if not _CHILD:
+    os.environ["NWN_TEST_SESSION"] = f"{os.getpid()}|{SESSION}"     # inherited by multiprocessing children
 WORKSPACE = os.path.join(SESSION, "ws")                  # not created: some checks prove nothing was written there
 NO_COMPILER = os.path.join(SESSION, "no_compiler", "nwn_script_comp")
 os.environ["NWN_WORKSPACE"] = WORKSPACE
@@ -57,14 +67,16 @@ TIMING = os.environ.get("NWN_TEST_TIMING") == "1"
 
 def _rmtree(path):
     """Remove a folder tree, retrying a few times: on Windows a file closed a moment ago (a child process, an SQLite
-    connection waiting for the garbage collector) can still be locked. Read-only files are made writable first."""
+    connection waiting for the garbage collector) can still be locked, and a deleted file stays "delete pending" (often
+    while antivirus scans it) so its folder can't be removed yet - an empty folder was left after a big suite. Retries
+    for about 10 s in all. Read-only files are made writable first."""
     def fix(func, p, _exc):
         try:
             os.chmod(p, 0o700)
             func(p)
         except OSError:
             pass
-    for attempt in range(5):
+    for attempt in range(10):
         if not os.path.exists(path):
             return
         gc.collect()                                      # closes connections nothing refers to any more
@@ -77,7 +89,24 @@ def _rmtree(path):
         time.sleep(0.2 * (attempt + 1))
 
 
-atexit.register(_rmtree, SESSION)
+def _release_dashboard():
+    """Close what the dashboard still holds open on the test workspace's analyses (its caches keep sqlite connections
+    for the life of the process). Without this, Windows refuses to delete those index.sqlite files at exit and the
+    suite is reported as leaving temporary files. Does nothing when no test imported the dashboard."""
+    dash = sys.modules.get("nwn_dashboard")
+    if dash is None:
+        return
+    for cache in list(getattr(dash, "ANALYSIS_CACHES", [])):
+        for key in list(cache.items):
+            try:
+                cache.drop(key[0] if isinstance(key, tuple) else key)
+            except Exception:  # noqa - best effort at exit; _rmtree still runs
+                pass
+
+
+if not _CHILD:                              # only the process that made the folder removes it
+    atexit.register(_rmtree, SESSION)
+atexit.register(_release_dashboard)        # registered last, so it runs first (atexit is last in, first out)
 
 
 @contextlib.contextmanager

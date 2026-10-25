@@ -305,7 +305,7 @@ def open_in_tool(name, file_path):
     app = _is_mac_app(exe)
     if not app and not os.path.isfile(exe):
         raise ValueError(f"{exe} does not exist - fix the path in Settings")
-    if os.name == "nt" and not exe.lower().endswith(".exe"):
+    if os.name == "nt" and not app and not exe.lower().endswith(".exe"):
         # .bat/.cmd are refused: Windows runs them through cmd.exe, which would interpret characters like & in a file name
         raise ValueError(f"{exe} is not a program (.exe)")
     if not app and not os.access(exe, os.X_OK):
