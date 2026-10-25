@@ -1,48 +1,90 @@
-# Contributing to the NWN Module Toolkit
+﻿# Участие в NWN Module Toolkit
 
-Thank you for helping. The toolkit is used on modules people have spent years building, so every change follows a
-few rules.
+**Русский** | [English](CONTRIBUTING.en.md)
 
-## The rules
-1. **Never change an original.** The toolkit only reads the user's module, haks and game install. Everything it
-   writes goes into `nwn_workspace/`, and everything a build makes gets a new name. The only writes outside the
-   workspace are buttons the user presses: Add to game folders (adds the build's new files, never replaces one; Undo
-   removes only those, if unchanged), Add to hak folder (adds a new file, never replaces one), Modules folder Move
-   (moves, never deletes; Undo), Restore (backs up first) and Extract (only into an empty folder). Do not add another
-   without the same care.
-2. **When unsure whether something is used, keep it.** A check that can't prove something unused marks it Review,
-   never Safe. A false "Safe" can break a module; a false "Review" only costs the user a look.
-3. **Comment the code for a reviewer.** Someone who knows Python but not NWN must be able to follow each file:
-   - a module docstring: why the file exists, what it reads and writes, and its limits;
-   - a docstring on every public function: its arguments, what it returns, and what it never does ("never raises",
-     "never writes the module");
-   - comments on the *why* of lines that aren't obvious: file-format offsets (cite the source, for example
-     neverwinter.nim), safety choices (temporary copies, no shell, read-only), and NWN behaviour the code relies on.
+Спасибо, что хотите помочь. Правила короткие и жёсткие — они держат проект в рабочем виде.
 
-   Don't comment what the code already says. `nwn_ncs.py` is a good example.
+---
 
-## Code
-- **Python 3.8 or newer, standard library only.** No packages to install. Don't use features newer than 3.8
-  (for example `str.removeprefix`) unless you check the version first.
-- Start external programs with an argument list, never through a shell.
-- Open analysis indexes read-only when you only read them (`nwnlib.sqlite_ro`).
-- User-facing messages are plain sentences that say what to do next. Write paths with forward slashes.
+## Три обязательных правила
 
-## Tests
-Run `python tests/run_all.py` (`python3` on macOS and Linux) before and after a change: it runs every suite, and all
-must pass. Each suite also runs on its own and ends with "N/M checks passed". When you fix a bug, add a check that
-fails without the fix.
+1. **Только стандартная библиотека Python.** Никаких `pip install`. Тулкит должен
+   запускаться на чистой установке Python.
+2. **Тесты проходят.** Перед pull request:
 
-## Documentation
-The user manual is `docs/MANUAL.md`, shown in the dashboard's Help page. Update it in the same change when a page,
-button or workflow changes, and use the button names exactly as the page shows them. Plain English, short sentences,
-British spelling.
+   ```
+   python tests/run_all.py
+   ```
 
-## Licence
-MIT - see `LICENSE`. Your contributions are released under the same licence. The neverwinter.nim tools are separate
-programs under their own MIT licence and are not included.
+   Сейчас это 20 наборов и 1300+ проверок. Если ваша правка ломает проверку — правьте
+   правку, а не проверку (исключение: проверка закрепляла ошибку — тогда объясните в PR).
+3. **Никаких секретов.** Ключи API, токены и пароли не попадают в репозиторий.
+   Перед коммитом:
 
-## Release markers
-Releases are generated from the source repository by a release script that is not part of the release. It removes
-text that only some editions carry, using markers in the source. Keep any markers you find intact and balanced (every
-opening marker needs its closing marker), or the release script refuses to run.
+   ```
+   python tools/check_secrets.py --staged
+   ```
+
+   Ключ ассистента живёт только в `nwn_workspace/harness.json`, и этот путь в `.gitignore`.
+
+---
+
+## Как устроен код
+
+| Файл | Назначение |
+|---|---|
+| `nwnlib.py` | чтение и запись форматов: GFF, ERF/MOD, TLK, 2DA |
+| `nwn_analyse.py` | точка входа анализа |
+| `nwn_index.py`, `nwn_analysis.py` | индексирование и проверки |
+| `nwn_dashboard.py`, `dashboard.html` | локальный сервер и интерфейс |
+| `nwn_compile.py`, `nwn_ncs.py` | компиляция скриптов и разбор `.ncs` |
+| `nwn_campaign.py`, `nwn_tocampaign.py` | работа с кампаниями |
+| `nwn_hakedit.py`, `nwn_hakslim.py` | хаки |
+| `nwn_2da.py` | таблицы 2DA |
+| `tests/` | наборы проверок и фикстуры |
+
+Интерфейс двуязычный: английский — исходный язык, русские подписи лежат в словаре
+`I18N_RU` внутри `dashboard.html`. Добавляя новую подпись, пишите её по-английски
+и добавьте пару в словарь.
+
+---
+
+## Стиль
+
+* комментарии — по-английски, короткие, только там, где код не говорит сам за себя;
+* имена — `snake_case`, функции-глаголы (`read_gff`, `write_erf_stream`);
+* ошибки — через исключения с понятным текстом, без `print` в библиотечном коде;
+* одна функция — одна задача; длинные разбирайте на части.
+
+---
+
+## Что приветствуется
+
+* новые проверки анализа (с фикстурой в `tests/`);
+* поддержка форматов, которые сейчас читаются частично;
+* переводы документации на другие языки;
+* сообщения об ошибках с приложенным `report.json` — по нему видно причину.
+
+---
+
+## Перед отправкой PR
+
+```
+python tests/run_all.py
+python tools/check_secrets.py
+git status --short
+```
+
+В описании PR: что изменилось, зачем, какие проверки добавлены.
+---
+
+## Важно: упоминания NWN1 в коде — не опечатки
+
+В `nwnlib.py`, `nwn_hakedit.py`, `nwn_index.py` и `nwn_build.py` слово NWN1 встречается
+намеренно: библиотека читает архивы **ERF V1.0** (NWN1) наряду с **V1.1** (NWN2), и на этом
+держится разбор чужих сборок. Там же описаны различия форматов: имена 16 против 32 символов,
+ключи 24 против 40 байт, текст cp1252 против UTF-8.
+
+Массовая замена «NWN1» на «NWN2» по этим файлам **ломает чтение архивов** и роняет тесты.
+Меняйте только пользовательские подписи и документацию, где речь о поддержке игры, и никогда —
+описания формата.
